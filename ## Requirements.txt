@@ -1,0 +1,54 @@
+## Requirements
+The Pinecone Python SDK requires Python 3.9 or later. It has been tested with CPython versions from 3.9 to 3.13.
+
+## SDK versions
+SDK versions are pinned to specific [API versions](/reference/api/versioning). When a new API version is released, a new version of the SDK is also released.
+
+The mappings between API versions and Python SDK versions are as follows:
+
+| API version                   | SDK version      |
+| :---------------------------- | :--------------- |
+| `2025-04` (release candidate) | Not yet released |
+| `2025-01` (latest)            | v6.x             |
+| `2024-10`                     | v5.3.x           |
+| `2024-07`                     | v5.0.x-v5.2.x    |
+| `2024-04`                     | v4.x             |
+
+When a new stable API version is released, you should upgrade your SDK to the latest version to ensure compatibility with the latest API changes.
+
+## Install
+To install the latest version of the [Python SDK](https://github.com/pinecone-io/pinecone-python-client), run the following command:
+
+```shell
+# Install the latest version
+pip install pinecone
+
+# Install the latest version with gRPC extras
+pip install "pinecone[grpc]"
+
+# Install the latest version with asyncio extras
+pip install "pinecone[asyncio]"
+```
+
+To install a specific version of the Python SDK, run the following command:
+
+```shell pip
+# Install a specific version
+pip install pinecone==<version>
+
+# Install a specific version with gRPC extras
+pip install "pinecone[grpc]"==<version>
+
+# Install a specific version with asyncio extras
+pip install "pinecone[asyncio]"==<version>
+```
+
+To check your SDK version, run the following command:
+
+```shell pip
+pip show pinecone
+```
+
+<Note>
+  To use the [Inference API](/guides/inference/understanding-inference), you must be on version 5.0.0 or later.
+</Note>

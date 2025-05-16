@@ -1,0 +1,9 @@
+# Initial user store for streamlit-authenticator
+credentials:
+  usernames:
+    admin:
+      email: admin@example.com
+      name: Admin User
+      password: "$2b$12$cNh7WjMRbjzmqdSv1yTaZetjs7SK1P/xgFlyjookDX3Lr7lYoY6CO"
+      gemini_api_key: ""
+      pinecone_api_key: ""
