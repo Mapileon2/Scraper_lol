@@ -16,6 +16,21 @@ import json
 import re
 from fake_useragent import UserAgent
 from urllib.parse import urlparse
+from typing import List, Dict, Optional, Any
+
+# Import the Pydantic models if present in the codebase
+try:
+    from .models import ScrapedDataInput
+except ImportError:
+    # Define a minimal version of the model if import fails
+    class ScrapedDataInput:
+        def __init__(self, data, url, page_num):
+            self.data = data
+            self.url = url
+            self.page_num = page_num
+        
+        def dict(self):
+            return {"data": self.data, "url": self.url, "page_num": self.page_num}
 
 # Dynamic pagination handler
 async def detect_pagination(page, pagination_strategy="auto"):
@@ -487,34 +502,87 @@ async def apply_rate_limiting(domain, rate_limits):
     delay = random.uniform(min_delay, max_delay)
     await asyncio.sleep(delay)
 
-# Modified to use Selenium instead of Playwright to avoid asyncio issues in Python 3.12
-def selenium_scrape(url, max_pages=3, pagination_strategy="auto", selectors=None, wait_time=2, 
-                    retry_limit=3):
-    """
-    Simplified version of advanced_scrape using Selenium instead of Playwright.
-    
-    Args:
-        url: Starting URL to scrape
-        max_pages: Maximum number of pages to scrape
-        pagination_strategy: Strategy for pagination
-        selectors: Dictionary of CSS selectors for data extraction
-        wait_time: Time to wait after page loads in seconds
-        retry_limit: Number of retries if scraping fails
+def infer_ai_selectors(driver, url: str, api_key: str, fields: Optional[List[str]] = None) -> Dict[str, str]:
+    """Use Gemini to infer selectors from a webpage"""
+    fields = fields or ["title", "text", "metadata"]
+    try:
+        genai.configure(api_key=api_key)
+        driver.get(url)
+        WebDriverWait(driver, 5).until(EC.presence_of_element_located((By.CSS_SELECTOR, "body")))
+        html = driver.page_source[:10000]  # Limit to avoid token limits
+        prompt = f"""
+        Analyze the HTML to identify CSS selectors for: {', '.join(fields)}.
+        Focus on elements containing primary content (e.g., titles, descriptions, reviews, product info).
+        Ignore headers, footers, ads, and navigation.
+        Return a JSON object mapping fields to CSS selectors.
         
-    Returns:
-        List of extracted data items
+        For example:
+        {{
+            "title": ".product-title, h1.title",
+            "text": ".product-description, .review-text",
+            "metadata": ".product-info, .specs"
+        }}
+        
+        HTML: {html}
+        """
+        model = genai.GenerativeModel("gemini-1.5-flash")
+        response = model.generate_content(prompt)
+        result_text = response.text.strip()
+        
+        # Try to parse as JSON
+        try:
+            result = json.loads(result_text)
+            return result
+        except json.JSONDecodeError:
+            # If not valid JSON, try to extract JSON using text processing
+            json_match = re.search(r'\{.*\}', result_text, re.DOTALL)
+            if json_match:
+                result = json.loads(json_match.group(0))
+                return result
+            else:
+                # Fallback to default selectors
+                return {
+                    "title": "h1, h2, h3, .title", 
+                    "text": "p, .content, .description", 
+                    "metadata": ".meta, .info"
+                }
+    except Exception as e:
+        st.warning(f"Error inferring selectors: {str(e)}")
+        return {
+            "title": "h1, h2, h3, .title", 
+            "text": "p, .content, .description", 
+            "metadata": ".meta, .info"
+        }
+
+# Modified selenium_scrape function to support generic data
+def selenium_scrape(
+    url: str,
+    max_pages: int = 3,
+    pagination_strategy: str = "auto",
+    selectors: Optional[Dict[str, str]] = None,
+    wait_time: int = 2,
+    auth_config: Optional[Dict] = None,
+    infer_selectors: bool = False,
+    api_key: Optional[str] = None,
+    proxy: Optional[str] = None,
+    retry_limit: int = 3
+) -> List[Dict]:
+    """
+    Simplified version of advanced_scrape using Selenium for better compatibility with Python 3.12.
+    Supports generic data extraction with flexible selectors.
     """
     results = []
     
+    # Default selectors for generic scraping
+    default_selectors = {
+        "title": "h1, h2, h3, .title",  # Common title selectors
+        "text": "p, .content, .description",  # Common text selectors
+        "metadata": ".meta, .info"  # Optional metadata
+    }
+    
+    # Use provided selectors or defaults
     if selectors is None:
-        selectors = {
-            "title": "h1",
-            "description": "p",
-            "business_name": ".business-name, .company-name, h3",
-            "address": ".address, .location",
-            "phone": ".phone, .tel",
-            "website": "a.website, .website a",
-        }
+        selectors = default_selectors
     
     # Initialize attempt counter
     attempt = 0
@@ -532,9 +600,22 @@ def selenium_scrape(url, max_pages=3, pagination_strategy="auto", selectors=None
             user_agent = UserAgent().random
             chrome_options.add_argument(f"--user-agent={user_agent}")
             
+            # Add proxy if provided
+            if proxy:
+                chrome_options.add_argument(f"--proxy-server={proxy}")
+            
             # Initialize driver
             driver = webdriver.Chrome(options=chrome_options)
             driver.set_page_load_timeout(30)  # 30 seconds timeout
+            
+            # AI-driven selector inference
+            if infer_selectors and api_key:
+                try:
+                    ai_selectors = infer_ai_selectors(driver, url, api_key)
+                    # Merge with existing selectors, prioritizing AI results
+                    selectors.update(ai_selectors)
+                except Exception as e:
+                    st.warning(f"Error with AI selectors: {str(e)}")
             
             current_url = url
             page_count = 0
@@ -550,33 +631,82 @@ def selenium_scrape(url, max_pages=3, pagination_strategy="auto", selectors=None
                 driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
                 time.sleep(1)
                 
-                # Extract data based on selectors
-                page_data = {}
+                # Try to find containers for data items
+                containers = []
+                container_selectors = [
+                    "article", ".item", ".review", ".product", 
+                    "div[class*='data']", ".card", ".listing"
+                ]
                 
-                for field, selector in selectors.items():
+                for selector in container_selectors:
                     try:
-                        elements = driver.find_elements(By.CSS_SELECTOR, selector)
-                        if elements:
-                            page_data[field] = [el.text for el in elements]
+                        items = driver.find_elements(By.CSS_SELECTOR, selector)
+                        if items:
+                            containers.extend(items)
+                    except:
+                        pass
+                
+                # If no containers found, treat the entire page as one item
+                if not containers:
+                    page_data = {"data": {}, "url": current_url, "page_num": page_count + 1}
+                    
+                    # Extract data for each field
+                    for field, selector in selectors.items():
+                        try:
+                            elements = driver.find_elements(By.CSS_SELECTOR, selector)
+                            if elements:
+                                page_data["data"][field] = [el.text.strip() for el in elements if el.text.strip()]
+                                if len(page_data["data"][field]) == 1:
+                                    page_data["data"][field] = page_data["data"][field][0]
+                            else:
+                                page_data["data"][field] = ""
+                        except Exception as e:
+                            page_data["data"][field] = ""
+                    
+                    # Validate and add to results
+                    try:
+                        validated_data = ScrapedDataInput(**page_data)
+                        results.append(validated_data.dict())
                     except Exception as e:
-                        st.warning(f"Error extracting {field}: {str(e)}")
-                
-                # Add metadata
-                page_data["url"] = current_url
-                page_data["page_num"] = page_count + 1
-                
-                # Add to results
-                results.append(page_data)
+                        st.warning(f"Error validating data: {str(e)}")
+                else:
+                    # Extract data from each container
+                    for item in containers:
+                        item_data = {"data": {}, "url": current_url, "page_num": page_count + 1}
+                        
+                        # Extract data for each field
+                        for field, selector in selectors.items():
+                            try:
+                                elements = item.find_elements(By.CSS_SELECTOR, selector)
+                                if elements:
+                                    item_data["data"][field] = [el.text.strip() for el in elements if el.text.strip()]
+                                    if len(item_data["data"][field]) == 1:
+                                        item_data["data"][field] = item_data["data"][field][0]
+                                else:
+                                    item_data["data"][field] = ""
+                            except Exception as e:
+                                item_data["data"][field] = ""
+                        
+                        # Validate and add to results if data exists
+                        if any(item_data["data"].values()):
+                            try:
+                                validated_data = ScrapedDataInput(**item_data)
+                                results.append(validated_data.dict())
+                            except Exception as e:
+                                st.warning(f"Error validating data: {str(e)}")
                 
                 # Handle pagination
                 page_count += 1
                 if page_count >= max_pages:
                     break
                 
-                # Find next page link
+                # Find next page link based on pagination strategy
                 current_url = None
                 if pagination_strategy == "auto" or pagination_strategy == "next_button":
-                    next_selectors = ['a[rel="next"]', 'button.next', 'a.next', '.pagination-next', 'li.next a', 'a:contains("Next")']
+                    next_selectors = [
+                        'a[rel="next"]', 'button.next', 'a.next', '.pagination-next', 
+                        'li.next a', 'a:contains("Next")', 'a.pagination__next'
+                    ]
                     for selector in next_selectors:
                         try:
                             next_element = driver.find_element(By.CSS_SELECTOR, selector)
@@ -631,10 +761,11 @@ async def advanced_scrape(url, max_pages=3, pagination_strategy="auto", selector
     st.warning("The advanced_scrape function has compatibility issues with Python 3.12. Using selenium_scrape instead.")
     return selenium_scrape(url, max_pages, pagination_strategy, selectors, wait_time, retry_limit)
 
-# A new convenience function to wrap the selenium_scrape for multi-threading
-def multi_url_scrape(urls, max_pages=3, pagination_strategy="auto", selectors=None, max_workers=3):
+# Update multi_url_scrape to use our enhanced selenium_scrape
+def multi_url_scrape(urls, max_pages=3, pagination_strategy="auto", selectors=None, 
+                     max_workers=3, infer_selectors=False, api_key=None):
     """
-    Scrape multiple URLs in parallel using Selenium.
+    Scrape multiple URLs in parallel using Selenium with enhanced data extraction.
     
     Args:
         urls: List of URLs to scrape
@@ -642,6 +773,8 @@ def multi_url_scrape(urls, max_pages=3, pagination_strategy="auto", selectors=No
         pagination_strategy: Strategy for pagination
         selectors: Dictionary of CSS selectors for data extraction
         max_workers: Maximum number of concurrent scrapers
+        infer_selectors: Whether to use AI to infer selectors
+        api_key: Gemini API key for selector inference
         
     Returns:
         Dictionary mapping each URL to its scraped results
@@ -649,7 +782,19 @@ def multi_url_scrape(urls, max_pages=3, pagination_strategy="auto", selectors=No
     results = {}
     
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_to_url = {executor.submit(selenium_scrape, url, max_pages, pagination_strategy, selectors): url for url in urls}
+        future_to_url = {
+            executor.submit(
+                selenium_scrape, 
+                url, 
+                max_pages, 
+                pagination_strategy, 
+                selectors,
+                2,  # wait_time
+                None,  # auth_config
+                infer_selectors,
+                api_key
+            ): url for url in urls
+        }
         
         for future in as_completed(future_to_url):
             url = future_to_url[future]
@@ -668,4 +813,12 @@ def multi_thread_scrape(urls, max_pages=3, pagination_strategy="auto", selectors
     """
     Simplified version for multi-thread scraping using Selenium.
     """
-    return multi_url_scrape(urls, max_pages, pagination_strategy, selectors, max_workers)
+    return multi_url_scrape(
+        urls, 
+        max_pages, 
+        pagination_strategy, 
+        selectors, 
+        max_workers,
+        infer_selectors,
+        api_key
+    )
