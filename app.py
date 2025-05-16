@@ -13,6 +13,7 @@ import csv
 from uuid import uuid4
 import sqlite3
 from datetime import datetime
+import time
 
 # Add Reasoning imports
 from src.reasoning import ReasoningAgent
@@ -681,14 +682,27 @@ with tab4:
         with tabs[1]:
             st.subheader("Analyze Scraped Data with Gemini API")
             
+            # Add warning about API quotas
+            st.warning("""
+                **Note on Gemini API Quotas**: 
+                The free tier has strict limits, especially for gemini-1.5-pro:
+                * gemini-1.5-flash: Higher quota limits (~1500 requests/day), prefer for most analyses
+                * gemini-1.5-pro: Very strict free limits (~60 requests/day)
+                
+                If you encounter quota errors, try:
+                1. Using the flash model instead of pro
+                2. Processing smaller batches of data
+                3. Waiting until quota resets (typically midnight Pacific Time)
+            """)
+            
             # Get API key
             api_key = st.text_input("Gemini API Key", value=os.getenv("GEMINI_API_KEY", ""), type="password")
             if not api_key:
                 st.warning("Please provide a Gemini API key to use AI analysis features")
                 st.stop()
             
-            # Model selection
-            model = st.selectbox("Select Gemini Model", ["gemini-1.5-flash", "gemini-1.5-pro"])
+            # Model selection - DEFAULT TO FLASH instead of pro
+            model = st.selectbox("Select Gemini Model", ["gemini-1.5-flash", "gemini-1.5-pro"], index=0)
             
             # Analysis options
             analysis_type = st.selectbox(
@@ -726,22 +740,45 @@ with tab4:
                         st.session_state.custom_prompts.append(custom_analysis)
                         st.success("Prompt saved!")
             
-            # Batch size
-            batch_size = st.slider("Batch Size (items per API call)", 1, 20, 5, 
-                                 help="Smaller batches are more reliable but take longer")
+            # Batch size - SMALLER DEFAULT
+            batch_size = st.slider("Batch Size (items per API call)", 1, 10, 3, 
+                                 help="Smaller batches help avoid quota issues but take longer")
             
-            # Process button
+            # Check for cached results first
             if st.button("Process Data with Gemini"):
                 if not api_key:
                     st.error("Please provide a Gemini API key")
                 elif analysis_type == "custom" and not custom_analysis:
                     st.error("Please provide a custom analysis prompt")
                 else:
+                    # Check if we have cached results
+                    session_id = st.session_state.get("selected_session_id", "default")
+                    cache_key = f"{session_id}_{analysis_type}_{model}"
+                    
+                    if "processed_cache" not in st.session_state:
+                        st.session_state.processed_cache = {}
+                    
+                    # Try to use cached results first
+                    if cache_key in st.session_state.processed_cache:
+                        st.success("Using cached results!")
+                        st.session_state.processed_data = st.session_state.processed_cache[cache_key]
+                        st.dataframe(st.session_state.processed_data)
+                        
+                        # Offer to reprocess
+                        if st.button("Force Reprocess Data"):
+                            # Will continue to processing logic below
+                            pass
+                        else:
+                            # Skip processing
+                            st.stop()
+                    
                     with st.spinner("Processing data with Gemini..."):
                         try:
                             # Check if original_df has the expected structure and convert if needed
                             data_list = []
-                            for index, row in original_df.iterrows():
+                            # Process only the first 50 items to avoid quota issues
+                            max_items = min(50, len(original_df))
+                            for index, row in original_df.iloc[:max_items].iterrows():
                                 # Check if data is already in the right format
                                 if "data" in row and isinstance(row["data"], dict):
                                     data = row
@@ -765,25 +802,60 @@ with tab4:
                                 except Exception as e:
                                     st.warning(f"Skipping invalid row {index}: {e}")
                             
+                            # Display progress information
+                            progress_bar = st.progress(0)
+                            status_text = st.empty()
+                            
                             # Initialize analysis
                             agent = ReasoningAgent(api_key, model)
                             analysis = custom_analysis if analysis_type == "custom" else analysis_type
                             
-                            # Process in batches
-                            processed_data = agent.process_data_batched(
-                                data_list, 
-                                analysis, 
-                                batch_size=batch_size
-                            )
+                            # Process in smaller chunks and show progress
+                            results = []
+                            total_batches = (len(data_list) + batch_size - 1) // batch_size
                             
-                            # Convert to DataFrame
-                            processed_df = pd.DataFrame([p.dict() for p in processed_data])
+                            for i in range(0, len(data_list), batch_size):
+                                batch = data_list[i:i+batch_size]
+                                status_text.text(f"Processing batch {(i//batch_size)+1}/{total_batches}...")
+                                
+                                # Process this batch
+                                batch_results = agent.process_data(batch, analysis)
+                                results.extend(batch_results)
+                                
+                                # Update progress
+                                progress = min(1.0, (i + batch_size) / len(data_list))
+                                progress_bar.progress(progress)
+                                
+                                # Add delay between batches to respect rate limits
+                                if i + batch_size < len(data_list):
+                                    for countdown in range(3, 0, -1):
+                                        status_text.text(f"Processed batch {(i//batch_size)+1}/{total_batches}. Waiting {countdown}s before next batch...")
+                                        time.sleep(1)
                             
-                            # Store in session state
+                            # Clear progress indicators
+                            progress_bar.empty()
+                            status_text.empty()
+                            
+                            # Convert to DataFrame and check for errors
+                            processed_df = pd.DataFrame([p.dict() for p in results])
+                            
+                            # Check for quota errors
+                            quota_errors = processed_df[processed_df["result"].apply(
+                                lambda x: isinstance(x, dict) and x.get("error") == "API quota exceeded"
+                            )]
+                            
+                            if len(quota_errors) > 0:
+                                st.error(f"""
+                                    Gemini API quota exceeded for {len(quota_errors)} items.
+                                    Try using gemini-1.5-flash instead of pro, or wait until quota resets.
+                                """)
+                            
+                            # Store in session state and cache
                             st.session_state.processed_data = processed_df
+                            st.session_state.processed_cache[cache_key] = processed_df
                             
                             # Display results
-                            st.success(f"Processed {len(processed_data)} items!")
+                            st.success(f"Processed {len(results)} items!")
                             st.dataframe(processed_df)
                             
                             # Save to database if session ID exists
@@ -814,6 +886,17 @@ with tab4:
                 processed_df = st.session_state.processed_data
                 st.write("Analysis data loaded - ask questions about it in the chat below")
                 
+                # Check for quota errors in processed data
+                quota_errors = processed_df[processed_df["result"].apply(
+                    lambda x: isinstance(x, dict) and x.get("error") == "API quota exceeded"
+                )]
+                
+                if len(quota_errors) > 0:
+                    st.warning(f"""
+                        Note: {len(quota_errors)} items had quota errors during analysis.
+                        Chat responses may be limited. Consider using gemini-1.5-flash model.
+                    """)
+                
                 # Initialize chat history
                 if "chat_history" not in st.session_state:
                     st.session_state.chat_history = []
@@ -824,6 +907,14 @@ with tab4:
                         st.write(chat["question"])
                     with st.chat_message("assistant"):
                         st.write(chat["answer"])
+                
+                # Limit chat history to save tokens
+                if len(st.session_state.chat_history) > 10:
+                    # Keep first message for context and last 9 for recent conversation
+                    st.info("Chat history has been trimmed to save tokens and avoid quota limits")
+                    first_message = st.session_state.chat_history[0]
+                    recent_messages = st.session_state.chat_history[-9:]
+                    st.session_state.chat_history = [first_message] + recent_messages
                 
                 # Chat input
                 chat_input = st.chat_input("Ask a question about the processed data (e.g., 'What are common themes?')")
@@ -841,13 +932,22 @@ with tab4:
                                 st.error("Please provide a Gemini API key")
                                 st.stop()
                             
-                            # Initialize the agent
-                            agent = ReasoningAgent(api_key, "gemini-1.5-pro")
+                            # Initialize the agent - use flash model to avoid quota limits
+                            agent = ReasoningAgent(api_key, "gemini-1.5-flash")
+                            
+                            # Limit the number of data points to reduce token usage
+                            max_data_points = 10
+                            if len(processed_df) > max_data_points:
+                                st.info(f"Using a sample of {max_data_points} data points (out of {len(processed_df)}) to stay within token limits")
                             
                             # Convert DataFrame rows to DataAnalysisOutput objects
                             processed_data = []
-                            for _, row in processed_df.iterrows():
+                            for _, row in processed_df.head(max_data_points).iterrows():
                                 try:
+                                    # Skip rows with API quota errors
+                                    if isinstance(row["result"], dict) and row["result"].get("error") == "API quota exceeded":
+                                        continue
+                                        
                                     output = DataAnalysisOutput(
                                         analysis_type=row["analysis_type"],
                                         result=row["result"],
@@ -864,16 +964,29 @@ with tab4:
                                 st.session_state.chat_history
                             )
                             
-                            # Add to chat history
-                            st.session_state.chat_history.append({
-                                "question": chat_input, 
-                                "answer": response
-                            })
-                            
-                            # Display response
-                            with st.chat_message("assistant"):
-                                st.write(response)
+                            # Check for quota errors in response
+                            if "quota exceeded" in response.lower() or "rate limit" in response.lower():
+                                st.error("""
+                                    Gemini API quota exceeded. Try:
+                                    1. Waiting a few minutes before asking another question
+                                    2. Simplifying your question
+                                    3. Waiting until the quota resets (usually midnight Pacific Time)
+                                """)
                                 
+                                # Don't add to chat history if there was a quota error
+                                with st.chat_message("assistant"):
+                                    st.write("Sorry, I couldn't generate a response due to API quota limits. Please try again later.")
+                            else:
+                                # Add to chat history
+                                st.session_state.chat_history.append({
+                                    "question": chat_input, 
+                                    "answer": response
+                                })
+                                
+                                # Display response
+                                with st.chat_message("assistant"):
+                                    st.write(response)
+                                    
                         except Exception as e:
                             st.error(f"Error in chat response: {e}")
             else:
@@ -923,70 +1036,129 @@ def search_query(query, index):
 
 # Function to save processed data to database
 def save_processed_to_database(processed_df, session_id):
-    """Save AI-processed analysis results to database"""
-    conn = sqlite3.connect('scraping_results.db')
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS processed_data (
-            id TEXT PRIMARY KEY,
-            session_id TEXT,
-            analysis_type TEXT,
-            result TEXT,
-            metadata TEXT,
-            created_at TEXT,
-            FOREIGN KEY (session_id) REFERENCES scraping_sessions(id)
-        )
-    """)
-    
-    for _, row in processed_df.iterrows():
-        result_id = str(uuid4())
-        cursor.execute(
-            "INSERT INTO processed_data VALUES (?, ?, ?, ?, ?, ?)",
-            (
-                result_id,
-                session_id,
-                row["analysis_type"],
-                json.dumps(row["result"]),
-                json.dumps(row["metadata"] if "metadata" in row and row["metadata"] else {}),
-                datetime.now().isoformat()
+    """Save AI-processed analysis results to database with error handling"""
+    try:
+        conn = sqlite3.connect('scraping_results.db')
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS processed_data (
+                id TEXT PRIMARY KEY,
+                session_id TEXT,
+                analysis_type TEXT,
+                result TEXT,
+                metadata TEXT,
+                created_at TEXT,
+                FOREIGN KEY (session_id) REFERENCES scraping_sessions(id)
             )
-        )
-    
-    conn.commit()
-    conn.close()
-    return True
+        """)
+        
+        successful_saves = 0
+        errors = 0
+        
+        for _, row in processed_df.iterrows():
+            try:
+                result_id = str(uuid4())
+                
+                # Safely convert result to JSON, handling complex objects
+                try:
+                    result_json = json.dumps(row["result"])
+                except (TypeError, OverflowError):
+                    # If complex object that can't be JSON serialized, convert to string representation
+                    result_json = json.dumps(str(row["result"]))
+                
+                # Safely convert metadata to JSON
+                if "metadata" in row and row["metadata"]:
+                    try:
+                        metadata_json = json.dumps(row["metadata"])
+                    except (TypeError, OverflowError):
+                        metadata_json = json.dumps(str(row["metadata"]))
+                else:
+                    metadata_json = json.dumps({})
+                
+                cursor.execute(
+                    "INSERT INTO processed_data VALUES (?, ?, ?, ?, ?, ?)",
+                    (
+                        result_id,
+                        session_id,
+                        row["analysis_type"],
+                        result_json,
+                        metadata_json,
+                        datetime.now().isoformat()
+                    )
+                )
+                successful_saves += 1
+            except Exception as e:
+                errors += 1
+                print(f"Error saving row to database: {e}")
+        
+        conn.commit()
+        conn.close()
+        
+        if errors > 0:
+            print(f"Warning: Failed to save {errors} out of {len(processed_df)} results")
+            
+        return successful_saves
+    except Exception as e:
+        print(f"Database error: {e}")
+        return 0
 
 # Function to load processed data from database
 def load_processed_data(session_id):
-    """Load processed analysis results from database"""
-    conn = sqlite3.connect('scraping_results.db')
-    cursor = conn.cursor()
-    
-    cursor.execute("""
-        SELECT id, analysis_type, result, metadata, created_at
-        FROM processed_data
-        WHERE session_id = ?
-        ORDER BY created_at DESC
-    """, (session_id,))
-    
-    rows = cursor.fetchall()
-    conn.close()
-    
-    if not rows:
+    """Load processed analysis results from database with error handling"""
+    try:
+        conn = sqlite3.connect('scraping_results.db')
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT id, analysis_type, result, metadata, created_at
+            FROM processed_data
+            WHERE session_id = ?
+            ORDER BY created_at DESC
+        """, (session_id,))
+        
+        rows = cursor.fetchall()
+        conn.close()
+        
+        if not rows:
+            return pd.DataFrame()
+        
+        # Create DataFrame with processed results
+        data = []
+        for row in rows:
+            try:
+                # Safe JSON parsing
+                try:
+                    result = json.loads(row[2])
+                except json.JSONDecodeError:
+                    result = {"error": "Invalid JSON", "text": row[2][:100]}
+                    
+                try:
+                    metadata = json.loads(row[3])
+                except json.JSONDecodeError:
+                    metadata = {"error": "Invalid JSON"}
+                
+                data.append({
+                    "id": row[0],
+                    "analysis_type": row[1],
+                    "result": result,
+                    "metadata": metadata,
+                    "created_at": row[4]
+                })
+            except Exception as e:
+                print(f"Error processing database row: {e}")
+                # Add a minimal entry so we don't lose data completely
+                data.append({
+                    "id": row[0] if row[0] else "unknown",
+                    "analysis_type": row[1] if row[1] else "unknown",
+                    "result": {"error": "Failed to load data"},
+                    "metadata": {"error_details": str(e)},
+                    "created_at": row[4] if row[4] else datetime.now().isoformat()
+                })
+        
+        return pd.DataFrame(data)
+    except Exception as e:
+        print(f"Error loading processed data: {e}")
         return pd.DataFrame()
-    
-    # Create DataFrame with processed results
-    data = []
-    for row in rows:
-        data.append({
-            "id": row[0],
-            "analysis_type": row[1],
-            "result": json.loads(row[2]),
-            "metadata": json.loads(row[3]),
-            "created_at": row[4]
-        })
-    
-    return pd.DataFrame(data)
 
 if __name__ == "__main__":
     pass

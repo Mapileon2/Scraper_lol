@@ -503,51 +503,76 @@ async def apply_rate_limiting(domain, rate_limits):
     await asyncio.sleep(delay)
 
 def infer_ai_selectors(driver, url: str, api_key: str, fields: Optional[List[str]] = None) -> Dict[str, str]:
-    """Use Gemini to infer selectors from a webpage"""
+    """Use Gemini to infer selectors from a webpage with optimized token usage"""
     fields = fields or ["title", "text", "metadata"]
     try:
         genai.configure(api_key=api_key)
         driver.get(url)
         WebDriverWait(driver, 5).until(EC.presence_of_element_located((By.CSS_SELECTOR, "body")))
-        html = driver.page_source[:10000]  # Limit to avoid token limits
-        prompt = f"""
-        Analyze the HTML to identify CSS selectors for: {', '.join(fields)}.
-        Focus on elements containing primary content (e.g., titles, descriptions, reviews, product info).
-        Ignore headers, footers, ads, and navigation.
-        Return a JSON object mapping fields to CSS selectors.
         
-        For example:
-        {{
-            "title": ".product-title, h1.title",
-            "text": ".product-description, .review-text",
-            "metadata": ".product-info, .specs"
-        }}
-        
-        HTML: {html}
-        """
-        model = genai.GenerativeModel("gemini-1.5-flash")
-        response = model.generate_content(prompt)
-        result_text = response.text.strip()
-        
-        # Try to parse as JSON
+        # Extract only the relevant parts of HTML to reduce token usage
+        # Focus on main content areas rather than full page HTML
         try:
-            result = json.loads(result_text)
-            return result
-        except json.JSONDecodeError:
-            # If not valid JSON, try to extract JSON using text processing
-            json_match = re.search(r'\{.*\}', result_text, re.DOTALL)
-            if json_match:
-                result = json.loads(json_match.group(0))
-                return result
+            # Try to extract just the main content
+            main_content = ""
+            content_elements = driver.find_elements(By.CSS_SELECTOR, "main, article, .content, #content, .main")
+            if content_elements:
+                # Use the first main content element found
+                main_content = content_elements[0].get_attribute('outerHTML')
+                html = main_content[:5000]  # Limit to 5000 chars
             else:
-                # Fallback to default selectors
-                return {
-                    "title": "h1, h2, h3, .title", 
-                    "text": "p, .content, .description", 
-                    "metadata": ".meta, .info"
-                }
+                # If no main content found, get a smaller sample of the body
+                html = driver.find_element(By.TAG_NAME, "body").get_attribute('outerHTML')[:3000]
+        except Exception:
+            # Fallback to a small snippet of the page source
+            html = driver.page_source[:2000]  # Reduced from 10000 to 2000 chars
+        
+        # Simplify the prompt to reduce token usage
+        prompt = f"""
+        Find CSS selectors for these elements in this HTML: {', '.join(fields)}
+        
+        Return ONLY a valid JSON object mapping field names to selectors.
+        Example: {{"title": ".title, h1", "text": "p, .content"}}
+        
+        HTML snippet:
+        {html}
+        """
+        
+        # Use gemini-1.5-flash to avoid quota issues
+        model = genai.GenerativeModel("gemini-1.5-flash")
+        
+        for attempt in range(2):  # Limit to 2 attempts to avoid quota issues
+            try:
+                response = model.generate_content(prompt)
+                result_text = response.text.strip()
+                
+                # Try to parse as JSON
+                try:
+                    result = json.loads(result_text)
+                    return result
+                except json.JSONDecodeError:
+                    # Try to extract JSON using regex if direct parsing fails
+                    json_match = re.search(r'\{.*\}', result_text, re.DOTALL)
+                    if json_match:
+                        result = json.loads(json_match.group(0))
+                        return result
+            except Exception as e:
+                if "quota" in str(e).lower() or "429" in str(e):
+                    st.warning("AI selector inference failed due to API quota limits. Using default selectors.")
+                    break
+                elif attempt == 1:
+                    st.warning(f"AI selector inference failed: {str(e)[:100]}")
+                    break
+                time.sleep(2)  # Wait before retry
+        
+        # Return fallback selectors
+        return {
+            "title": "h1, h2, h3, .title", 
+            "text": "p, .content, .description", 
+            "metadata": ".meta, .info"
+        }
     except Exception as e:
-        st.warning(f"Error inferring selectors: {str(e)}")
+        st.warning(f"Error inferring selectors: {str(e)[:100]}")
         return {
             "title": "h1, h2, h3, .title", 
             "text": "p, .content, .description", 
