@@ -1,12 +1,17 @@
-# Enhanced Web Scraper & Data Processor
+# Web Scraper Pro
 
-A powerful, AI-assisted web scraping tool designed to extract structured business data from various websites with advanced scraping capabilities and data processing features.
+A powerful web scraping tool with AI-powered data extraction capabilities, supporting multiple scraping backends including Selenium and Crawl4AI.
 
 ## Features
 
-### Advanced Scraping Capabilities
+- **Multiple Scraping Backends**: Choose between Standard, Clean, or AI-Powered (Crawl4AI) scrapers
+- **AI-Powered Data Extraction**: Uses Gemini AI for intelligent data extraction
+- **Multi-URL Scraping**: Scrape multiple URLs in parallel
+- **Advanced Analysis**: Built-in data analysis and visualization
+- **Session Management**: Save and load scraping sessions
+- **Export Data**: Export scraped data to CSV, JSON, or SQLite
 
-- **Dynamic Pagination Handling**: Automatically detects and handles various pagination patterns including infinite scroll, numbered pages, and next buttons.
+## Installation
 - **Parallel and Asynchronous Scraping**: Process multiple URLs concurrently to maximize efficiency.
 - **Authentication Support**: Handle form logins, basic auth, cookies, and OAuth for scraped sites requiring authentication.
 - **Smart Selector Detection**: Uses Gemini AI to automatically detect and suggest CSS selectors for target elements.

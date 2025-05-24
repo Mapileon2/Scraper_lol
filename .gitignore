@@ -34,7 +34,19 @@ venv.bak/
 
 # Database
 *.db
-*.sqlite3
+*.sqlite
+*.db.bak
+scraper_*.db
+scraping_results_*.db
+
+# Logs and cache
+*.log
+logs/
+.scraper_cache/
+selector_cache.pkl
+
+# Output and data
+Output/
 
 # IDE-specific files
 .idea/
@@ -44,4 +56,27 @@ venv.bak/
 
 # OS specific
 .DS_Store
-Thumbs.db 
+Thumbs.db
+
+# Project specific
+app_backup.py
+app_fixed.py
+app_improved.py
+app_new.py
+app_test.py
+check_imports.py
+run_app.bat
+run_fixed.bat
+setup_environment.bat
+setup_fixed.bat
+fix_*.py
+fix_*.bat
+repair_env.ps1
+*.bak
+
+# Streamlit
+.streamlit/
+
+# Temp files
+*~
+*.tmp

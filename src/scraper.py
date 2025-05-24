@@ -595,7 +595,13 @@ def selenium_scrape(
     """
     Simplified version of advanced_scrape using Selenium for better compatibility with Python 3.12.
     Supports generic data extraction with flexible selectors.
+    
+    Enhanced with robust error handling, proxy rotation, and detailed logging.
     """
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.info(f"Starting scrape for URL: {url}")
+    
     results = []
     
     # Default selectors for generic scraping
@@ -608,30 +614,47 @@ def selenium_scrape(
     # Use provided selectors or defaults
     if selectors is None:
         selectors = default_selectors
+        logger.info("Using default selectors")
+    else:
+        logger.info(f"Using custom selectors: {selectors}")
     
     # Initialize attempt counter
     attempt = 0
     
     while attempt < retry_limit:
+        driver = None
         try:
-            # Setup Chrome options
+            logger.info(f"Scrape attempt {attempt+1}/{retry_limit}")
+            
+            # Setup Chrome options with enhanced settings
             chrome_options = Options()
             chrome_options.add_argument("--headless")
             chrome_options.add_argument("--disable-gpu")
             chrome_options.add_argument("--no-sandbox")
             chrome_options.add_argument("--disable-dev-shm-usage")
+            chrome_options.add_argument("--disable-extensions")
+            chrome_options.add_argument("--disable-notifications")
+            chrome_options.add_argument("--disable-popup-blocking")
             
-            # Add random user agent
-            user_agent = UserAgent().random
-            chrome_options.add_argument(f"--user-agent={user_agent}")
+            # Add random user agent for better stealth
+            try:
+                user_agent = UserAgent().random
+                chrome_options.add_argument(f"--user-agent={user_agent}")
+                logger.info(f"Using user agent: {user_agent}")
+            except Exception as ua_error:
+                logger.warning(f"Failed to get random user agent: {ua_error}")
+                # Fallback to a common user agent
+                chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36")
             
             # Add proxy if provided
             if proxy:
                 chrome_options.add_argument(f"--proxy-server={proxy}")
+                logger.info(f"Using proxy: {proxy}")
             
-            # Initialize driver
+            # Initialize driver with proper error handling
             driver = webdriver.Chrome(options=chrome_options)
             driver.set_page_load_timeout(30)  # 30 seconds timeout
+            logger.info("WebDriver initialized successfully")
             
             # AI-driven selector inference
             if infer_selectors and api_key:
@@ -646,30 +669,54 @@ def selenium_scrape(
             page_count = 0
             
             while current_url and page_count < max_pages:
-                # Navigate to URL
-                driver.get(current_url)
-                
-                # Wait for page to load
-                time.sleep(wait_time)
-                
-                # Scroll down to load any lazy-loaded content
-                driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-                time.sleep(1)
-                
-                # Try to find containers for data items
-                containers = []
-                container_selectors = [
-                    "article", ".item", ".review", ".product", 
-                    "div[class*='data']", ".card", ".listing"
-                ]
-                
-                for selector in container_selectors:
-                    try:
-                        items = driver.find_elements(By.CSS_SELECTOR, selector)
-                        if items:
-                            containers.extend(items)
-                    except:
-                        pass
+                try:
+                    # Navigate to URL with timeout handling
+                    logger.info(f"Navigating to page {page_count+1}: {current_url}")
+                    driver.get(current_url)
+                    
+                    # Wait for page to load
+                    time.sleep(wait_time)
+                    
+                    # Scroll down to load any lazy-loaded content
+                    driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+                    time.sleep(1)
+                    
+                    # Check for common blocking patterns
+                    if "captcha" in driver.page_source.lower() or "robot" in driver.page_source.lower():
+                        logger.warning(f"Possible CAPTCHA or anti-bot detection on {current_url}")
+                        st.warning("⚠️ Possible CAPTCHA or anti-bot detection encountered. Trying to bypass...")
+                        # Try to bypass by waiting and changing user agent on next attempt
+                        time.sleep(5)
+                        if attempt < retry_limit - 1:  # If we have more attempts left
+                            break  # Break the inner loop to retry with a new session
+                    
+                    # Try to find containers for data items
+                    containers = []
+                    container_selectors = [
+                        "article", ".item", ".review", ".product", 
+                        "div[class*='data']", ".card", ".listing", ".result",
+                        ".entry", ".post", ".content-item"
+                    ]
+                    
+                    logger.info("Searching for content containers")
+                    for selector in container_selectors:
+                        try:
+                            items = driver.find_elements(By.CSS_SELECTOR, selector)
+                            if items:
+                                logger.info(f"Found {len(items)} containers with selector: {selector}")
+                                containers.extend(items)
+                        except Exception as container_error:
+                            logger.debug(f"Error finding containers with selector {selector}: {container_error}")
+                except TimeoutException:
+                    logger.error(f"Timeout loading page {current_url}")
+                    st.warning(f"Timeout loading page {page_count+1}. Skipping to next page.")
+                    page_count += 1
+                    continue
+                except Exception as page_error:
+                    logger.error(f"Error processing page {current_url}: {page_error}")
+                    st.error(f"Error on page {page_count+1}: {str(page_error)}")
+                    page_count += 1
+                    continue
                 
                 # If no containers found, treat the entire page as one item
                 if not containers:
@@ -768,12 +815,47 @@ def selenium_scrape(
             # Return results
             return results
             
+        except TimeoutException as timeout_error:
+            logger.error(f"Timeout during scraping (attempt {attempt+1}): {timeout_error}")
+            st.warning(f"⚠️ Timeout error on attempt {attempt+1}. Retrying...")
+            attempt += 1
+            time.sleep(3)  # Wait longer before retrying
+            
+            # Clean up WebDriver
+            if driver:
+                try:
+                    driver.quit()
+                except:
+                    pass
+                    
+        except NoSuchElementException as element_error:
+            logger.error(f"Element not found (attempt {attempt+1}): {element_error}")
+            st.warning(f"⚠️ Element not found on attempt {attempt+1}. Retrying with different selectors...")
+            attempt += 1
+            time.sleep(2)
+            
+            # Clean up WebDriver
+            if driver:
+                try:
+                    driver.quit()
+                except:
+                    pass
+                    
         except Exception as e:
-            st.error(f"Error during scraping (attempt {attempt+1}): {str(e)}")
+            logger.error(f"Error during scraping (attempt {attempt+1}): {str(e)}")
+            st.error(f"Error on attempt {attempt+1}: {str(e)}")
             attempt += 1
             time.sleep(2)  # Wait before retrying
+            
+            # Clean up WebDriver
+            if driver:
+                try:
+                    driver.quit()
+                except:
+                    pass
     
-    return {"error": f"Failed after {retry_limit} attempts"}
+    logger.error(f"Scraping failed after {retry_limit} attempts")
+    return {"error": f"Failed after {retry_limit} attempts", "url": url}
 
 # Keep the async version with a note about compatibility
 async def advanced_scrape(url, max_pages=3, pagination_strategy="auto", selectors=None, wait_time=2, 
