@@ -61,9 +61,9 @@ Thumbs.db
 # Project specific
 app_backup.py
 app_fixed.py
-app_improved.py
+# app_improved.py  # Now tracking this file
 app_new.py
-app_test.py
+# app_test.py  # Now tracking this file
 check_imports.py
 run_app.bat
 run_fixed.bat
