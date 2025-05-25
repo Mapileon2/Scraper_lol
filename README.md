@@ -62,8 +62,18 @@ A powerful web scraping tool with AI-powered data extraction capabilities, suppo
 
 Launch the Streamlit application:
 ```bash
-streamlit run app.py
+streamlit run app_improved.py
 ```
+
+## Resource Requirements
+
+This application can be resource-intensive, especially when using features like:
+
+*   **Selenium/Playwright-based scraping**: Running headless browsers consumes significant CPU and RAM. Parallel scraping will multiply this effect.
+*   **AI Models**: Embedding models (like Sentence Transformers) are loaded into memory.
+*   **Data Processing**: Handling large datasets with Pandas can also require substantial memory.
+
+Ensure your deployment environment has adequate resources (e.g., at least 2GB RAM, 1 CPU core per parallel worker is a rough guideline, but actual needs may vary based on usage intensity and website complexity). Insufficient resources can lead to slow performance or crashes.
 
 ## Usage Guide
 
@@ -146,6 +156,35 @@ proxies = [
     "http://proxy2.example.com:8080"
 ]
 ```
+
+### Deployment Considerations
+
+#### Daily Request Limit Tracking
+
+The application uses a local file (`daily_requests.json`) to track daily API request counts for rate limiting purposes. This method is suitable for single-instance deployments where the application has write access to the local filesystem.
+
+**Important Considerations for Scaled Deployments:**
+
+*   In multi-instance environments (e.g., when deployed on platforms like Streamlit Cloud with multiple workers, Kubernetes, or other forms of horizontal scaling), each instance will maintain its own `daily_requests.json`. This will result in an inaccurate global request count, and the rate limiting may not function as intended across all instances.
+*   In read-only filesystem environments, the application will fail to write to `daily_requests.json`, potentially causing errors or disabling the rate limiting feature.
+
+For robust and accurate daily request tracking in such environments, it is recommended to implement a centralized solution, such as:
+*   A database (e.g., Redis, PostgreSQL).
+*   A distributed caching service.
+
+#### API Key Provisioning
+
+The application requires API keys for services like Google Gemini, Mistral AI, and optionally Pinecone.
+
+*   **Local Development**: You can place your API keys in a `.env` file in the root directory of the project. The application will load these keys at startup. Example `.env` file content:
+
+    ```
+    GEMINI_API_KEY=your_gemini_api_key
+    MISTRAL_API_KEY=your_mistral_api_key
+    PINECONE_API_KEY=your_pinecone_api_key
+    ```
+
+*   **Deployed Environments**: When deploying the application (e.g., to Streamlit Cloud, Heroku, AWS, GCP, Azure), it is recommended to use the platform's system for managing environment variables or secrets. Do not commit your `.env` file or hardcode API keys directly into the application. The application will read these environment variables if set. The sidebar configuration for API keys can also be used, but for persistent settings in a deployed app, environment variables are preferred.
 
 ## API Reference
 

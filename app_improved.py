@@ -90,6 +90,15 @@ MAX_RETRIES = 5  # Maximum number of retries for rate limit errors
 INITIAL_RETRY_DELAY = 60  # Initial delay in seconds
 MAX_RETRY_DELAY = 300  # Maximum delay between retries in seconds
 
+# --- Daily Request Tracking Configuration ---
+# WARNING: The current implementation for daily request tracking uses a local JSON file (`daily_requests.json`).
+# This approach has limitations in multi-instance deployments (e.g., scaled Streamlit Cloud apps, Kubernetes)
+# as each instance would have its own separate count, leading to inaccurate overall rate limiting.
+# It will also fail in read-only filesystem environments.
+# For robust request tracking in such scenarios, consider using:
+#   - A centralized database (e.g., Redis, PostgreSQL, MySQL) to store and manage counts.
+#   - A distributed caching service that supports atomic increments.
+#   - A dedicated API rate limiting service.
 # File to persist daily request count
 REQUEST_COUNT_FILE = 'daily_requests.json'
 
@@ -2065,7 +2074,6 @@ def get_default_selectors() -> Dict[str, List[str]]:
     }
 
 def process_single_page(
-    scraper: Optional[ScraperAgent],
     url: str,
     selectors: Dict[str, str],
     wait_time: float = 2.0,
@@ -3040,7 +3048,6 @@ def render_scraper_tab():
                                 future_to_url = {
                                     executor.submit(
                                         process_single_page,
-                                        scraper,
                                         url,
                                         st.session_state.selectors,
                                         wait_time,
@@ -3077,7 +3084,6 @@ def render_scraper_tab():
                                 try:
                                     status_text.text(f"Scraping page {i}/{total}...")
                                     success, result = process_single_page(
-                                        scraper,
                                         url,
                                         st.session_state.selectors,
                                         wait_time,
@@ -3418,6 +3424,10 @@ if __name__ == "__main__":
     # Set environment variables before any imports
     import os
     os.environ['PYTORCH_JIT'] = '0'  # Disable PyTorch JIT
+    
+    # Load environment variables from .env file
+    from dotenv import load_dotenv
+    load_dotenv()
     
     # Configure asyncio for Windows if needed
     import sys

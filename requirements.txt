@@ -23,7 +23,11 @@ fake-useragent>=1.1.1
 
 # AI models
 google-generativeai>=0.3.0
-pinecone>=5.0.0
+pinecone-client==5.0.0
+sentence-transformers==2.2.2
+torch==2.0.1
+torchvision==0.15.2
+torchaudio==2.0.2
 litellm>=1.53.1
 
 # Utilities
