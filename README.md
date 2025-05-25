@@ -10,6 +10,8 @@ A powerful web scraping tool with AI-powered data extraction capabilities, suppo
 - **Advanced Analysis**: Built-in data analysis and visualization
 - **Session Management**: Save and load scraping sessions
 - **Export Data**: Export scraped data to CSV, JSON, or SQLite
+- **Web Interface**: Streamlit-based web UI for easy interaction
+- **Vercel Deployment**: One-click deployment to Vercel
 
 ## Installation
 - **Parallel and Asynchronous Scraping**: Process multiple URLs concurrently to maximize efficiency.
@@ -33,8 +35,9 @@ A powerful web scraping tool with AI-powered data extraction capabilities, suppo
 - Python 3.10+
 - Gemini API key (for AI-powered features)
 - Pinecone API key (for vector storage)
+- Vercel account (for deployment)
 
-### Installation
+### Local Installation
 
 1. Clone this repository:
    ```bash
@@ -42,21 +45,45 @@ A powerful web scraping tool with AI-powered data extraction capabilities, suppo
    cd <repository-directory>
    ```
 
-2. Install dependencies:
+2. Create and activate a virtual environment:
+   ```bash
+   python -m venv venv
+   source venv/bin/activate  # On Windows: venv\Scripts\activate
+   ```
+
+3. Install dependencies:
    ```bash
    pip install -r requirements.txt
    ```
 
-3. Install Playwright browsers:
-   ```bash
-   playwright install
-   ```
-
+4. Install Playwright browsers:
 4. Create a `.env` file with your API keys:
    ```
    GEMINI_API_KEY=your_gemini_api_key
    PINECONE_API_KEY=your_pinecone_api_key
    ```
+
+### Vercel Deployment
+
+1. Fork this repository to your GitHub account
+
+2. Go to [Vercel](https://vercel.com) and sign in with your GitHub account
+
+3. Click "Add New..." > "Project"
+
+4. Import your forked repository
+
+5. In the project settings:
+   - Set the framework preset to "Streamlit"
+   - Set the root directory to "/"
+   - Add environment variables:
+     - `GEMINI_API_KEY`: Your Gemini API key
+     - `PINECONE_API_KEY`: Your Pinecone API key (if using)
+     - `STREAMLIT_SERVER_HEADLESS`: Set to "true"
+
+6. Click "Deploy"
+
+7. After deployment, your app will be available at `https://your-project-name.vercel.app`
 
 ### Running the Application
 

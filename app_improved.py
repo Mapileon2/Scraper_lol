@@ -8,11 +8,46 @@ import os
 os.environ['STREAMLIT_SERVER_HEADLESS'] = 'true'
 os.environ['STREAMLIT_SERVER_FILE_WATCHER_TYPE'] = 'none'
 
-# Import Streamlit initialization first to handle PyTorch compatibility
+# Import Streamlit first to handle page configuration
+import streamlit as st
+
+# Configure the page first - this must be the first Streamlit command
+st.set_page_config(
+    page_title="Web Scraper Pro",
+    page_icon="🔍",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# Now apply PyTorch compiler patch for compatibility
+import sys
+import types
+import torch
+
+# Create a dummy compiler module if it doesn't exist
+if not hasattr(torch, 'compiler'):
+    compiler_module = types.ModuleType('torch.compiler')
+    
+    # Add a dummy disable decorator
+    def dummy_disable(*args, **kwargs):
+        def decorator(func):
+            return func
+        return decorator
+    
+    compiler_module.disable = dummy_disable
+    
+    # Add the dummy module to torch
+    torch.compiler = compiler_module
+    
+    # Also add to sys.modules to prevent re-import issues
+    sys.modules['torch.compiler'] = compiler_module
+
+# Import Streamlit initialization after setting page config
 import streamlit_init  # noqa: F401
 
 # Standard library imports
 import asyncio
+import io
 import json
 import logging
 from logging.handlers import RotatingFileHandler
@@ -28,6 +63,7 @@ import re
 
 # Third-party imports
 import pandas as pd
+import pyperclip
 import requests
 import streamlit as st
 from streamlit.components.v1 import html
@@ -36,14 +72,10 @@ import pinecone
 from sentence_transformers import SentenceTransformer
 import hashlib
 import google.generativeai as genai
+from docx import Document
 
-# Initialize Streamlit configuration
-st.set_page_config(
-    page_title="Web Page Analyzer",
-    page_icon="🔍",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+# Streamlit configuration is already set at the top of the file
+# (No need to call set_page_config again)
 
 from dotenv import load_dotenv
 from google.api_core.exceptions import ResourceExhausted
@@ -2558,11 +2590,12 @@ def render_analysis_tab():
         if 'last_analysis_time' in st.session_state:
             st.caption(f"Last analyzed: {time.ctime(st.session_state.last_analysis_time)}")
         
-        tab1, tab2, tab3, tab4 = st.tabs([
+        tab1, tab2, tab3, tab4, tab5 = st.tabs([
             "🔍 Overview",
             "🧩 Elements",
             "📊 Combined Analysis",
-            "⚙️ Technical Details"
+            "⚙️ Technical Details",
+            "🤖 AI Analysis"
         ])
         
         with tab1:  # Overview
@@ -2599,37 +2632,98 @@ def render_analysis_tab():
             
             if elements:
                 try:
-                    # Convert elements to DataFrame for better display
-                    df = pd.DataFrame(elements)
+                    # Organize elements by type
+                    elements_by_type = {}
+                    for element in elements:
+                        element_type = element.get('type', 'other').lower()
+                        if element_type not in elements_by_type:
+                            elements_by_type[element_type] = []
+                        elements_by_type[element_type].append(element)
                     
-                    # Display elements in a table with expandable details
-                    st.dataframe(
-                        df,
-                        use_container_width=True,
-                        column_config={
-                            "type": "Element Type",
-                            "selector": "CSS Selector",
-                            "description": "Description"
-                        },
-                        hide_index=True
-                    )
+                    # Display elements in organized sections
+                    for element_type, items in elements_by_type.items():
+                        with st.expander(f"🔹 {element_type.title()} ({len(items)})", expanded=element_type in ['heading', 'text', 'link']):
+                            for i, element in enumerate(items, 1):
+                                with st.container():
+                                    col1, col2 = st.columns([1, 3])
+                                    with col1:
+                                        # Display element type with icon
+                                        type_icon = {
+                                            'heading': '📝',
+                                            'text': '📄',
+                                            'link': '🔗',
+                                            'image': '🖼️',
+                                            'button': '🖱️',
+                                            'form': '📝',
+                                            'input': '⌨️',
+                                            'list': '📋',
+                                            'table': '📊',
+                                            'video': '🎥',
+                                            'audio': '🔊',
+                                            'iframe': '🌐',
+                                        }.get(element_type, '🔘')
+                                        
+                                        st.markdown(f"**{type_icon} {element.get('type', 'Element').title()}**")
+                                        
+                                        # Show selector in a code block
+                                        if 'selector' in element:
+                                            st.code(element['selector'], language='css')
+                                    
+                                    with col2:
+                                        # Display element details
+                                        if 'text' in element and element['text'].strip():
+                                            st.markdown(f"```\n{element['text'].strip()}\n```")
+                                        
+                                        # Show additional metadata
+                                        metadata = []
+                                        if 'class' in element and element['class']:
+                                            metadata.append(f"Classes: `{', '.join(element['class'])}`")
+                                        if 'id' in element and element['id']:
+                                            metadata.append(f"ID: `{element['id']}`")
+                                        if 'href' in element and element['href']:
+                                            metadata.append(f"URL: [{element['href']}]({element['href']})")
+                                        if 'src' in element and element['src']:
+                                            metadata.append(f"Source: `{element['src']}`")
+                                        
+                                        if metadata:
+                                            st.markdown(" ".join(metadata))
+                                        
+                                        # Show description if available
+                                        if 'description' in element and element['description']:
+                                            st.markdown(f"*{element['description']}*")
+                                    
+                                    # Add a divider between elements
+                                    if i < len(items):
+                                        st.divider()
                     
-                    # Show raw JSON in expander for debugging
-                    with st.expander("View Raw Elements Data"):
+                    # Raw data view in an expander
+                    with st.expander("📋 View Raw Elements Data"):
                         st.json(elements)
-                        
-                except Exception as e:
-                    st.error(f"Error displaying elements: {str(e)}")
-                    st.json(elements)  # Show raw data if dataframe conversion fails
-            else:
-                st.info("No elements detected in the page analysis.")
+                    
+                    # Add a button to copy all selectors
+                    if st.button("📋 Copy All Selectors to Clipboard"):
+                        selectors = [f"{e.get('type', 'element').title()}: {e.get('selector', '')}" for e in elements if 'selector' in e]
+                        if selectors:
+                            pyperclip.copy("\n".join(selectors))
+                            st.success("All selectors copied to clipboard!")
+                        else:
+                            st.warning("No selectors found to copy.")
                 
-                # Debug information
-                with st.expander("Debug: Analysis Data"):
+                except Exception as e:
+                    st.error(f"Error processing elements: {str(e)}")
+                    with st.expander("View Raw Data"):
+                        st.json(elements)
+            else:
+                st.info("No elements detected in the page analysis. The page may be empty or not properly loaded.")
+                
+                # Debug information in an expander
+                with st.expander("🔍 Debug Information"):
                     st.json({
                         'has_combined_analysis': 'combined_analysis' in analysis,
                         'has_elements_in_combined': 'elements' in combined if 'combined_analysis' in analysis else False,
-                        'has_elements_in_root': 'elements' in analysis
+                        'has_elements_in_root': 'elements' in analysis,
+                        'analysis_keys': list(analysis.keys()) if isinstance(analysis, dict) else 'Not a dictionary',
+                        'combined_analysis_keys': list(combined.keys()) if isinstance(combined, dict) else 'No combined analysis'
                     })
             
             # Handle forms if they exist
@@ -2697,47 +2791,164 @@ def render_analysis_tab():
             # Show processing information
             st.subheader("Processing Information")
             
-            # Show chunk information if available
-            if 'chunk_analyses' in analysis and analysis['chunk_analyses']:
-                st.metric("Chunks Processed", len(analysis['chunk_analyses']))
-                
-                # Show chunk details in an expander
-                with st.expander("View Chunk Details", expanded=False):
-                    for i, chunk in enumerate(analysis['chunk_analyses'], 1):
-                        with st.expander(f"Chunk {i}", expanded=False):
-                            st.json(chunk)
+        with tab5:  # AI Analysis
+            st.subheader("AI-Powered Analysis")
+            st.markdown("""
+            This section provides an AI-generated analysis of the webpage content.
+            The analysis is generated using advanced language models to extract key insights,
+            summarize content, and provide actionable information.
+            """)
             
-            # Show any errors or warnings
-            if 'errors' in analysis and analysis['errors']:
-                st.error("Processing Errors")
-                for error in analysis['errors']:
-                    st.error(error)
-            
-            # Show performance metrics if available
-            if 'performance_metrics' in analysis:
-                st.subheader("Performance Metrics")
-                metrics = analysis['performance_metrics']
-                cols = st.columns(3)
-                for i, (key, value) in enumerate(metrics.items()):
-                    with cols[i % 3]:
-                        st.metric(key.replace('_', ' ').title(), f"{value:.2f}s" if isinstance(value, (int, float)) else str(value))
-            
-            # Handle forms if they exist
-            forms = combined.get("forms", [])
-            if forms:
-                with st.expander("📋 Detected Forms", expanded=False):
-                    for form in forms:
-                        action = form.get('action', 'N/A')
-                        st.markdown(f"**Form (Action: {action})**")
-                        for field in form.get("fields", []):
-                            st.markdown(f"- {field.get('name', 'unnamed')} ({field.get('type', 'text')})")
-            
-            # Navigation links
-            navigation_links = combined.get("navigation", [])
-            if navigation_links:
-                with st.expander("🔗 Navigation Links", expanded=False):
-                    for link in navigation_links:
-                        st.markdown(f"- {link}")
+            # Check if we have the necessary API key
+            if 'gemini_api_key' not in st.session_state or not st.session_state.gemini_api_key:
+                st.warning("⚠️ Gemini API key is required for AI analysis. Please add it in the sidebar.")
+            else:
+                # Button to generate AI analysis
+                if st.button("✨ Generate AI Analysis", type="secondary"):
+                    with st.spinner("Generating AI analysis (this may take a minute)..."):
+                        try:
+                            # Get the page content for analysis
+                            page_content = ""
+                            if 'content' in analysis:
+                                page_content = analysis['content']
+                            elif 'combined_analysis' in analysis and 'content' in analysis['combined_analysis']:
+                                page_content = analysis['combined_analysis']['content']
+                            
+                            # Prepare the prompt for Gemini
+                            prompt = f"""
+                            Analyze the following webpage content and provide a detailed summary and insights.
+                            Focus on the following aspects:
+                            1. Main topic and purpose of the page
+                            2. Key points and important information
+                            3. Tone and style of writing
+                            4. Target audience
+                            5. Any notable features or elements
+                            6. Suggestions for improvement
+                            
+                            Webpage URL: {analysis.get('url', 'N/A')}
+                            Webpage Title: {analysis.get('title', 'No title')}
+                            
+                            Content:
+                            {page_content[:15000]}  # Limit content length to avoid token limits
+                            """
+                            
+                            # Initialize Gemini with the correct model name
+                            try:
+                                genai.configure(api_key=st.session_state.gemini_api_key)
+                                
+                                # Get available models
+                                available_models = [m.name for m in genai.list_models()]
+                                st.session_state.available_models = available_models
+                                
+                                # Try to use the latest model, fallback to any available model if needed
+                                model_name = 'gemini-1.5-pro-latest'  # Updated model name
+                                
+                                # Initialize the model
+                                model = genai.GenerativeModel(model_name)
+                                
+                                # Generate content with error handling
+                                response = model.generate_content(prompt)
+                                
+                                if not response or not response.text:
+                                    raise ValueError("Empty response from Gemini API")
+                                    
+                                # Store the response in session state
+                                st.session_state.ai_analysis = response.text
+                                
+                            except Exception as e:
+                                st.error(f"Error generating AI analysis: {str(e)}")
+                                st.session_state.ai_analysis = None
+                                
+                                # Debug information
+                                with st.expander("Debug Information"):
+                                    st.write("Available models:", st.session_state.get('available_models', 'Not loaded'))
+                                    st.write("Attempted model:", model_name if 'model_name' in locals() else 'Unknown')
+                                    st.write("Full error:", str(e))
+                            
+                            # Display the AI analysis if available
+                            if 'ai_analysis' in st.session_state and st.session_state.ai_analysis:
+                                st.markdown("### AI Analysis Results")
+                                st.markdown(st.session_state.ai_analysis)
+                                
+                                # Add a button to copy the analysis
+                                if st.button("📋 Copy Analysis to Clipboard"):
+                                    pyperclip.copy(st.session_state.ai_analysis)
+                                    st.success("Analysis copied to clipboard!")
+                            else:
+                                st.info("Click the 'Generate AI Analysis' button to get started.")
+                                
+                                # Example of what the AI analysis will look like
+                                with st.expander("Example AI Analysis"):
+                                    st.markdown("""
+                                    **Main Topic and Purpose:**
+                                    The page appears to be a product landing page for a SaaS platform, designed to convert visitors into trial users or paying customers.
+                                    
+                                    **Key Points:**
+                                    - The platform offers AI-powered data analysis tools
+                                    - Key features include automated reporting, real-time analytics, and team collaboration
+                                    - Pricing starts at $29/month with a 14-day free trial
+                                    
+                                    **Tone and Style:**
+                                    Professional yet approachable tone, with clear calls-to-action and benefit-focused language.
+                                    
+                                    **Target Audience:**
+                                    Small to medium business owners, marketing professionals, and data analysts.
+                                    
+                                    **Notable Features:**
+                                    - Clean, modern design with clear navigation
+                                    - Strong social proof with customer testimonials
+                                    - FAQ section addressing common concerns
+                                    
+                                    **Suggestions for Improvement:**
+                                    - Add more specific case studies
+                                    - Include a live demo video
+                                    - Consider adding a chatbot for instant support
+                                    """)
+                            
+                            # Show chunk information if available
+                            if 'chunk_analyses' in analysis and analysis['chunk_analyses']:
+                                st.metric("Chunks Processed", len(analysis['chunk_analyses']))
+                                
+                                # Show chunk details in an expander
+                                with st.expander("View Chunk Details", expanded=False):
+                                    for i, chunk in enumerate(analysis['chunk_analyses'], 1):
+                                        with st.expander(f"Chunk {i}", expanded=False):
+                                            st.json(chunk)
+                            
+                            # Show any errors or warnings
+                            if 'errors' in analysis and analysis['errors']:
+                                st.error("Processing Errors")
+                                for error in analysis['errors']:
+                                    st.error(error)
+                            
+                            # Show performance metrics if available
+                            if 'performance_metrics' in analysis:
+                                st.subheader("Performance Metrics")
+                                metrics = analysis['performance_metrics']
+                                cols = st.columns(3)
+                                for i, (key, value) in enumerate(metrics.items()):
+                                    with cols[i % 3]:
+                                        st.metric(key.replace('_', ' ').title(), f"{value:.2f}s" if isinstance(value, (int, float)) else str(value))
+                            
+                            # Handle forms if they exist
+                            forms = combined.get("forms", [])
+                            if forms:
+                                with st.expander("📋 Detected Forms", expanded=False):
+                                    for form in forms:
+                                        action = form.get('action', 'N/A')
+                                        st.markdown(f"**Form (Action: {action})**")
+                                        for field in form.get("fields", []):
+                                            st.markdown(f"- {field.get('name', 'unnamed')} ({field.get('type', 'text')})")
+                            
+                            # Navigation links
+                            navigation_links = combined.get("navigation", [])
+                            if navigation_links:
+                                with st.expander("🔗 Navigation Links", expanded=False):
+                                    for link in navigation_links:
+                                        st.markdown(f"- {link}")
+                        except Exception as e:
+                            st.error(f"Error processing AI analysis: {str(e)}")
+                            st.info("Please try again or check your API key configuration.")
         
         with tab3:  # Combined Analysis
             st.subheader("Combined Analysis")
@@ -3138,31 +3349,360 @@ def render_scraper_tab():
                 st.error(f"An error occurred during scraping: {str(e)}")
                 logger.error(f"Scraping error: {str(e)}\n{traceback.format_exc()}")
 
+def render_crawl4ai_analysis_tab():
+    """Render the Crawl4AI Analysis tab with first-page analysis."""
+    st.header("🔍 Crawl4AI Analysis")
+    
+    if not CRAWL4AI_AVAILABLE:
+        st.error("Crawl4AI is not available. Please check the installation.")
+        return
+    
+    st.markdown("""
+    Analyze a webpage using Crawl4AI's AI-powered analysis to detect content,
+    extract structured data, and understand the page structure.
+    """)
+    
+    # URL input and analysis options
+    with st.container():
+        col1, col2 = st.columns([3, 1])
+        
+        with col1:
+            url = st.text_input(
+                "Enter URL to analyze with Crawl4AI",
+                value=st.session_state.get('crawl4ai_analysis_url', ''),
+                key="crawl4ai_analysis_url_input",
+                placeholder="https://example.com",
+                help="Enter the URL you want to analyze with Crawl4AI"
+            )
+            
+            # Update session state if URL changed
+            if url != st.session_state.get('crawl4ai_analysis_url'):
+                st.session_state.crawl4ai_analysis_url = url
+                # Clear previous results when URL changes
+                if 'crawl4ai_analysis_results' in st.session_state:
+                    del st.session_state.crawl4ai_analysis_results
+        
+        with col2:
+            st.markdown("##")
+            analyze_js = st.checkbox(
+                "Use JavaScript",
+                value=st.session_state.get('crawl4ai_analyze_js', True),
+                key="crawl4ai_analyze_js",
+                help="Enable JavaScript rendering (slower but more accurate)"
+            )
+            
+            analyze_button = st.button("🔍 Analyze Page", type="primary", key="crawl4ai_analyze_button", use_container_width=True)
+            
+            if analyze_button:
+                if not url or not is_valid_url(url):
+                    st.error("Please enter a valid URL")
+                else:
+                    with st.spinner("Analyzing page with Crawl4AI..."):
+                        try:
+                            # Initialize the scraper
+                            scraper = Crawl4AIScraper()
+                            
+                            # Define analysis schema
+                            schema = {
+                                "type": "object",
+                                "properties": {
+                                    "title": {"type": "string", "description": "Page title"},
+                                    "description": {"type": "string", "description": "Page description"},
+                                    "headings": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "level": {"type": "string", "enum": ["h1", "h2", "h3", "h4", "h5", "h6"]},
+                                                "text": {"type": "string"},
+                                                "selector": {"type": "string"}
+                                            },
+                                            "required": ["level", "text", "selector"]
+                                        }
+                                    },
+                                    "key_elements": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "type": {"type": "string", "enum": ["text", "image", "link", "button", "form"]},
+                                                "selector": {"type": "string"},
+                                                "content": {"type": "string"},
+                                                "attributes": {"type": "object"}
+                                            },
+                                            "required": ["type", "selector"]
+                                        }
+                                    },
+                                    "page_structure": {"type": "string"},
+                                    "technologies": {
+                                        "type": "array",
+                                        "items": {"type": "string"}
+                                    },
+                                    "accessibility": {"type": "object"},
+                                    "performance_metrics": {"type": "object"}
+                                },
+                                "required": ["title", "headings", "key_elements"]
+                            }
+                            
+                            # Run analysis
+                            loop = asyncio.new_event_loop()
+                            asyncio.set_event_loop(loop)
+                            analysis_results = loop.run_until_complete(
+                                scraper.extract_structured_data(url=url, schema=schema)
+                            )
+                            loop.close()
+                            
+                            # Store results in session state
+                            st.session_state.crawl4ai_analysis_results = {
+                                'url': url,
+                                'timestamp': pd.Timestamp.now().isoformat(),
+                                'results': analysis_results,
+                                'processing_time': time.time()
+                            }
+                            
+                            st.success("✅ Analysis completed successfully!")
+                            st.rerun()
+                            
+                        except Exception as e:
+                            st.error(f"Error during Crawl4AI analysis: {str(e)}")
+                            logger.error(f"Crawl4AI analysis error: {str(e)}\n{traceback.format_exc()}")
+    
+    # Display analysis results if available
+    if 'crawl4ai_analysis_results' in st.session_state and st.session_state.crawl4ai_analysis_results:
+        results = st.session_state.crawl4ai_analysis_results
+        analysis = results['results']
+        
+        # Calculate processing time
+        processing_time = time.time() - results.get('processing_time', 0)
+        
+        # Create tabs for different sections
+        tab1, tab2, tab3, tab4 = st.tabs([
+            "🔍 Overview",
+            "🧩 Elements",
+            "⚙️ Technical Details",
+            "📊 Performance"
+        ])
+        
+        with tab1:  # Overview
+            st.subheader("Page Overview")
+            
+            # URL and timestamp
+            st.caption(f"Analyzed: {pd.to_datetime(results['timestamp']).strftime('%Y-%m-%d %H:%M:%S')} • "
+                     f"Processing time: {processing_time:.2f} seconds")
+            
+            # Title and description
+            if 'title' in analysis and analysis['title']:
+                st.markdown(f"### {analysis['title']}")
+            
+            if 'description' in analysis and analysis['description']:
+                st.markdown(f"*{analysis['description']}*")
+            
+            # Page structure summary
+            if 'page_structure' in analysis and analysis['page_structure']:
+                with st.expander("🏗️ Page Structure Summary", expanded=True):
+                    st.write(analysis['page_structure'])
+            
+            # Technologies used
+            if 'technologies' in analysis and analysis['technologies']:
+                with st.expander("🛠️ Technologies Used", expanded=False):
+                    st.write(", ".join(analysis['technologies']))
+        
+        with tab2:  # Elements
+            # Headings
+            if 'headings' in analysis and analysis['headings']:
+                with st.expander(f"📑 Headings ({len(analysis['headings'])})", expanded=True):
+                    for heading in analysis['headings']:
+                        with st.container():
+                            cols = st.columns([1, 4, 2])
+                            with cols[0]:
+                                st.markdown(f"**{heading['level'].upper()}**")
+                            with cols[1]:
+                                st.code(heading['text'], language='text')
+                            with cols[2]:
+                                st.caption(f"`{heading['selector']}`")
+            
+            # Key elements
+            if 'key_elements' in analysis and analysis['key_elements']:
+                with st.expander(f"🔑 Key Elements ({len(analysis['key_elements'])})", expanded=True):
+                    for i, element in enumerate(analysis['key_elements'][:50]):  # Limit to first 50 elements
+                        with st.expander(f"{element['type'].upper()} - {element.get('content', 'No content')[:50]}...", expanded=False):
+                            st.json({
+                                "type": element['type'],
+                                "selector": element['selector'],
+                                "content": element.get('content', '')[:500] + ('...' if len(element.get('content', '')) > 500 else ''),
+                                **element.get('attributes', {})
+                            })
+                            
+                            # Add buttons for common actions
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                if st.button(f"📋 Copy Selector", key=f"copy_{i}"):
+                                    st.session_state.selectors[element['type']] = element['selector']
+                                    st.success(f"Added {element['type']} selector")
+                            with col2:
+                                if st.button(f"🔍 Test Selector", key=f"test_{i}"):
+                                    st.session_state.testing_selector = {
+                                        'name': element['type'],
+                                        'selector': element['selector']
+                                    }
+                                    st.rerun()
+        
+        with tab3:  # Technical Details
+            st.subheader("Technical Information")
+            
+            # Accessibility
+            if 'accessibility' in analysis and analysis['accessibility']:
+                with st.expander("♿ Accessibility", expanded=False):
+                    st.json(analysis['accessibility'])
+            
+            # Raw analysis data
+            with st.expander("📄 Raw Analysis Data", expanded=False):
+                st.json(analysis)
+        
+        with tab4:  # Performance
+            st.subheader("Performance Metrics")
+            
+            if 'performance_metrics' in analysis and analysis['performance_metrics']:
+                metrics = analysis['performance_metrics']
+                
+                # Display metrics in columns
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    st.metric("Load Time (ms)", metrics.get('load_time', 'N/A'))
+                with col2:
+                    st.metric("Page Size (KB)", metrics.get('page_size_kb', 'N/A'))
+                with col3:
+                    st.metric("Requests", metrics.get('request_count', 'N/A'))
+                
+                # Additional metrics
+                with st.expander("Detailed Metrics", expanded=False):
+                    st.json(metrics)
+            else:
+                st.info("Performance metrics not available for this analysis.")
+
+
+def process_multiple_urls(urls, scraper, extract_structured, max_pages, schema):
+    """Process multiple URLs asynchronously and return results."""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
+    results = []
+    
+    try:
+        with st.spinner(f"Scraping {len(urls)} URLs..."):
+            tasks = []
+            for url in urls:
+                if extract_structured:
+                    task = loop.create_task(
+                        scraper.extract_structured_data(url=url, schema=schema)
+                    )
+                else:
+                    selectors = {
+                        'title': 'h1',
+                        'content': 'main, article, .content, #content',
+                        'links': 'a[href]'
+                    }
+                    task = loop.create_task(
+                        scraper.scrape_pages(
+                            url=url,
+                            selectors=selectors,
+                            max_pages=max_pages,
+                            show_progress=False
+                        )
+                    )
+                tasks.append((url, task))
+            
+            # Run all tasks concurrently
+            completed = 0
+            progress_bar = st.progress(0)
+            
+            for url, task in tasks:
+                try:
+                    result = loop.run_until_complete(task)
+                    results.append({
+                        'url': url,
+                        'data': result,
+                        'success': True,
+                        'error': None
+                    })
+                except Exception as e:
+                    logger.error(f"Error processing {url}: {str(e)}")
+                    results.append({
+                        'url': url,
+                        'data': None,
+                        'success': False,
+                        'error': str(e)
+                    })
+                
+                # Update progress
+                completed += 1
+                progress = int((completed / len(tasks)) * 100)
+                progress_bar.progress(progress)
+            
+            progress_bar.empty()
+            
+    finally:
+        loop.close()
+    
+    return results
+
 def render_crawl4ai_tab():
-    """Render the Crawl4AI tab."""
+    """Render the Crawl4AI tab with subtabs for different functionalities."""
     st.header("🤖 Crawl4AI Scraper")
     
     if not CRAWL4AI_AVAILABLE:
         st.error("Crawl4AI scraper is not available. Please check the installation.")
         return
     
-    st.markdown("""
-    Use Crawl4AI to extract structured data from web pages with AI-powered extraction.
-    This scraper can handle dynamic content and provides better handling of modern websites.
-    """)
+    # Create subtabs
+    tab1, tab2 = st.tabs(["🔍 Analysis", "🛠️ Scraper"])
     
-    # URL input
-    url = st.text_input(
-        "Enter URL to scrape with Crawl4AI",
-        value=st.session_state.get('crawl4ai_url', ''),
-        key="crawl4ai_url_input",
-        placeholder="https://example.com",
-        help="Enter the URL you want to scrape with Crawl4AI"
+    with tab1:
+        render_crawl4ai_analysis_tab()
+    
+    with tab2:
+        st.markdown("""
+        Use Crawl4AI to extract structured data from web pages with AI-powered extraction.
+        This scraper can handle dynamic content and provides better handling of modern websites.
+        """)
+    
+    # URL input section
+    input_method = st.radio(
+        "Input Method",
+        ["Single URL", "Multiple URLs"],
+        horizontal=True,
+        key="crawl4ai_input_method"
     )
     
-    # Update session state if URL changed
-    if url != st.session_state.get('crawl4ai_url'):
-        st.session_state.crawl4ai_url = url
+    urls = []
+    
+    if input_method == "Single URL":
+        url = st.text_input(
+            "Enter URL to scrape with Crawl4AI",
+            value=st.session_state.get('crawl4ai_url', ''),
+            key="crawl4ai_url_input",
+            placeholder="https://example.com",
+            help="Enter the URL you want to scrape with Crawl4AI"
+        )
+        if url:
+            urls = [url.strip() for url in url.split('\n') if url.strip()]
+    else:
+        url_input = st.text_area(
+            "Enter one URL per line",
+            value='\n'.join(st.session_state.get('crawl4ai_urls', [])),
+            key="crawl4ai_urls_input",
+            placeholder="https://example1.com\nhttps://example2.com\nhttps://example3.com",
+            help="Enter one URL per line"
+        )
+        urls = [url.strip() for url in url_input.split('\n') if url.strip()]
+        st.session_state.crawl4ai_urls = urls
+    
+    # Update session state
+    if urls:
+        if len(urls) == 1:
+            st.session_state.crawl4ai_url = urls[0]
+        st.session_state.crawl4ai_urls = urls
     
     # Scraping options
     with st.expander("⚙️ Crawl4AI Settings", expanded=False):
@@ -3183,6 +3723,16 @@ def render_crawl4ai_tab():
                 key="crawl4ai_extract_structured",
                 help="Use AI to extract structured data from the page"
             )
+            
+            # Only show concurrency control for multiple URLs
+            if len(urls) > 1:
+                max_concurrent = st.slider(
+                    "Max Concurrent Requests",
+                    min_value=1,
+                    max_value=10,
+                    value=min(5, len(urls)),
+                    help="Number of URLs to process simultaneously"
+                )
         
         with col2:
             include_links = st.checkbox(
@@ -3198,151 +3748,295 @@ def render_crawl4ai_tab():
                 key="crawl4ai_use_js",
                 help="Enable JavaScript rendering (slower but more accurate for dynamic sites)"
             )
+            
+            if len(urls) > 1:
+                st.metric("Total URLs to process", len(urls))
+    
+    # Define schema for structured data extraction
+    schema = {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string", "description": "The title of the page"},
+            "summary": {"type": "string", "description": "A brief summary of the main content"},
+            "key_topics": {
+                "type": "array", 
+                "items": {"type": "string"}, 
+                "description": "Main topics covered in the article"
+            },
+            "technologies_mentioned": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Web technologies or libraries mentioned"
+            },
+            "main_content": {
+                "type": "string",
+                "description": "The main content of the page"
+            }
+        },
+        "required": ["title", "summary"]
+    }
     
     # Start scraping button
     if st.button("🚀 Start Crawl4AI Scraping", type="primary", use_container_width=True):
-        if not url or not is_valid_url(url):
-            st.error("Please enter a valid URL")
+        if not urls or not all(url.strip() for url in urls):
+            st.error("Please enter at least one valid URL")
         else:
-            with st.spinner("Scraping with Crawl4AI..."):
-                try:
-                    # Initialize the scraper
-                    scraper = Crawl4AIScraper()
-                    
-                    # Run the scraper
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                    
-                    if extract_structured:
-                        # Define a schema for structured data extraction
-                        schema = {
-                            "type": "object",
-                            "properties": {
-                                "title": {"type": "string", "description": "The title of the page"},
-                                "summary": {"type": "string", "description": "A brief summary of the main content"},
-                                "key_topics": {
-                                    "type": "array", 
-                                    "items": {"type": "string"}, 
-                                    "description": "Main topics covered in the article"
-                                },
-                                "technologies_mentioned": {
-                                    "type": "array",
-                                    "items": {"type": "string"},
-                                    "description": "Web technologies or libraries mentioned"
-                                },
-                                "main_content": {
-                                    "type": "string",
-                                    "description": "The main content of the page"
-                                }
-                            },
-                            "required": ["title", "summary"]
-                        }
-                        
-                        # Extract structured data
-                        structured_data = loop.run_until_complete(
-                            scraper.extract_structured_data(url=url, schema=schema)
-                        )
-                        
-                        # Store results in session state
-                        st.session_state.crawl4ai_results = {
-                            'type': 'structured',
-                            'data': structured_data,
-                            'url': url,
-                            'timestamp': pd.Timestamp.now().isoformat()
-                        }
-                        
-                        st.success("✅ Successfully extracted structured data with Crawl4AI!")
-                        
-                    else:
-                        # Regular scraping with selectors
-                        selectors = {
-                            'title': 'h1',
-                            'content': 'main, article, .content, #content',
-                            'links': 'a[href]'
-                        }
-                        
-                        results = loop.run_until_complete(
-                            scraper.scrape_pages(
-                                url=url,
-                                selectors=selectors,
-                                max_pages=max_pages,
-                                show_progress=False
-                            )
-                        )
-                        
-                        # Store results in session state
-                        if results:
-                            st.session_state.crawl4ai_results = {
-                                'type': 'scraped',
-                                'data': results,
-                                'url': url,
-                                'timestamp': pd.Timestamp.now().isoformat()
-                            }
-                            st.success(f"✅ Successfully scraped {len(results)} pages with Crawl4AI!")
-                        else:
-                            st.warning("No data was scraped. Please check the URL and try again.")
-                    
-                    # Close the event loop
-                    loop.close()
-                    
-                except Exception as e:
-                    st.error(f"Error during Crawl4AI scraping: {str(e)}")
-                    logger.error(f"Crawl4AI error: {str(e)}\n{traceback.format_exc()}")
+            try:
+                # Initialize the scraper
+                scraper = Crawl4AIScraper()
+                
+                # Process all URLs
+                results = process_multiple_urls(
+                    urls=urls,
+                    scraper=scraper,
+                    extract_structured=extract_structured,
+                    max_pages=max_pages,
+                    schema=schema
+                )
+                
+                # Store results in session state
+                st.session_state.crawl4ai_results = {
+                    'type': 'batch',
+                    'results': results,
+                    'extract_structured': extract_structured,
+                    'timestamp': pd.Timestamp.now().isoformat()
+                }
+                
+                # Show success message
+                success_count = sum(1 for r in results if r['success'])
+                if success_count == len(results):
+                    st.success(f"✅ Successfully processed {success_count} URLs!")
+                elif success_count > 0:
+                    st.warning(f"⚠️ Processed {success_count} of {len(results)} URLs successfully. {len(results) - success_count} failed.")
+                else:
+                    st.error("❌ Failed to process all URLs. Please check the error messages.")
+                
+                # Rerun to update the UI
+                st.rerun()
+                
+            except Exception as e:
+                st.error(f"Error during Crawl4AI scraping: {str(e)}")
+                logger.error(f"Crawl4AI error: {str(e)}\n{traceback.format_exc()}")
     
     # Display results if available
     if 'crawl4ai_results' in st.session_state and st.session_state.crawl4ai_results:
         results = st.session_state.crawl4ai_results
         
         st.subheader("📊 Crawl4AI Results")
-        st.write(f"URL: {results['url']}")
-        st.write(f"Scraped at: {pd.to_datetime(results['timestamp']).strftime('%Y-%m-%d %H:%M:%S')}")
+        st.write(f"Processed at: {pd.to_datetime(results['timestamp']).strftime('%Y-%m-%d %H:%M:%S')}")
         
-        if results['type'] == 'structured':
-            # Display structured data
-            st.subheader("Structured Data")
+        if results['type'] == 'batch':
+            # Display batch results
+            st.write(f"Processed {len(results['results'])} URLs")
             
-            # Display title and summary
-            if 'title' in results['data']:
-                st.markdown(f"### {results['data']['title']}")
+            # Show summary
+            success_count = sum(1 for r in results['results'] if r['success'])
+            st.metric("Successfully Processed", f"{success_count}/{len(results['results'])}")
             
-            if 'summary' in results['data']:
-                st.markdown("#### Summary")
-                st.write(results['data']['summary'])
+            # Create tabs for each result
+            tabs = st.tabs([f"Result {i+1}" for i in range(len(results['results']))])
             
-            # Display key topics if available
-            if 'key_topics' in results['data'] and results['data']['key_topics']:
-                st.markdown("#### Key Topics")
-                for i, topic in enumerate(results['data']['key_topics'][:10], 1):
-                    st.write(f"{i}. {topic}")
-            
-            # Display main content if available
-            if 'main_content' in results['data'] and results['data']['main_content']:
-                with st.expander("View Full Content", expanded=False):
-                    st.markdown(results['data']['main_content'])
-            
-            # Display technologies mentioned if available
-            if 'technologies_mentioned' in results['data'] and results['data']['technologies_mentioned']:
-                st.markdown("#### Technologies Mentioned")
-                st.write(", ".join(results['data']['technologies_mentioned']))
-            
-        else:
-            # Display scraped data
-            st.subheader("Scraped Data")
-            
-            # Convert to DataFrame for better display
-            df = pd.json_normalize(results['data'])
-            
-            # Display the first few rows
-            st.dataframe(df.head())
-            
-            # Add download button
-            csv = df.to_csv(index=False).encode('utf-8')
+            for i, (result, tab) in enumerate(zip(results['results'], tabs)):
+                with tab:
+                    st.caption(f"URL: {result['url']}")
+                    
+                    if not result['success']:
+                        st.error(f"Error: {result['error']}")
+                        continue
+                        
+                    data = result['data']
+                    
+                    if results['extract_structured']:
+                        # Display structured data
+                        if 'title' in data:
+                            st.markdown(f"### {data['title']}")
+                        
+                        if 'summary' in data:
+                            st.markdown("#### Summary")
+                            st.write(data['summary'])
+                        
+                        # Display key topics if available
+                        if 'key_topics' in data and data['key_topics']:
+                            with st.expander(f"🔑 Key Topics ({len(data['key_topics'])})", expanded=False):
+                                for j, topic in enumerate(data['key_topics'][:10], 1):
+                                    st.write(f"{j}. {topic}")
+                        
+                        # Display main content if available
+                        if 'main_content' in data and data['main_content']:
+                            with st.expander("📄 View Full Content", expanded=False):
+                                st.markdown(data['main_content'])
+                        
+                        # Display technologies mentioned if available
+                        if 'technologies_mentioned' in data and data['technologies_mentioned']:
+                            with st.expander("🛠️ Technologies Mentioned", expanded=False):
+                                st.write(", ".join(data['technologies_mentioned']))
+                    else:
+                        # Display scraped data
+                        if isinstance(data, list) and data:
+                            st.write(f"Found {len(data)} pages")
+                            for page in data:
+                                with st.expander(f"Page {page.get('page_num', 1)}", expanded=False):
+                                    st.json(page)
+                        else:
+                            st.json(data)
+        
+        # Add export section
+        st.subheader("Export Results")
+        
+        # Prepare data for download
+        download_data = {
+            'metadata': {
+                'generated_at': results['timestamp'],
+                'total_urls': len(results['results'] if results['type'] == 'batch' else 1),
+                'successful': sum(1 for r in (results['results'] if results['type'] == 'batch' else [results]) if r.get('success', True)),
+                'type': 'structured' if results.get('extract_structured', True) else 'scraped'
+            },
+            'results': results['results'] if results['type'] == 'batch' else [results]
+        }
+        
+        # Create columns for download buttons
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            # JSON Download
+            json_data = json.dumps(download_data, indent=2, ensure_ascii=False)
             st.download_button(
-                label="💾 Download as CSV",
-                data=csv,
-                file_name=f"crawl4ai_scraped_data_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                mime="text/csv"
+                label="⬇️ JSON",
+                data=json_data,
+                file_name=f"crawl4ai_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                mime="application/json"
             )
+        
+        with col2:
+            # Excel Download
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                # Create a summary sheet
+                summary_data = {
+                    'URL': [r['url'] for r in download_data['results']],
+                    'Status': ['Success' if r.get('success', True) else 'Failed' for r in download_data['results']],
+                    'Error': [r.get('error', '') for r in download_data['results']]
+                }
+                pd.DataFrame(summary_data).to_excel(writer, sheet_name='Summary', index=False)
+                
+                # Add sheets for each successful result
+                for i, result in enumerate(download_data['results']):
+                    if result.get('success') and result.get('data'):
+                        if isinstance(result['data'], dict):
+                            # For structured data
+                            df = pd.json_normalize(result['data'])
+                            df.to_excel(writer, sheet_name=f"Result_{i+1}"[:31], index=False)
+                        elif isinstance(result['data'], list):
+                            # For list of pages
+                            for j, page in enumerate(result['data']):
+                                df = pd.json_normalize(page)
+                                df.to_excel(writer, sheet_name=f"R{i+1}_P{j+1}"[:31], index=False)
+            
+            st.download_button(
+                label="⬇️ Excel",
+                data=output.getvalue(),
+                file_name=f"crawl4ai_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+        
+        with col3:
+            # Word Download
+            doc = Document()
+            doc.add_heading('Crawl4AI Scraping Results', 0)
+            
+            # Add metadata
+            doc.add_heading('Metadata', level=1)
+            meta = doc.add_paragraph()
+            meta.add_run(f"Generated at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            meta.add_run(f"Total URLs: {len(download_data['results'])}\n")
+            meta.add_run(f"Successful: {sum(1 for r in download_data['results'] if r.get('success', False))}\n")
+            
+            # Add results
+            doc.add_heading('Results', level=1)
+            for i, result in enumerate(download_data['results'], 1):
+                doc.add_heading(f"Result {i}: {result['url']}", level=2)
+                
+                if not result.get('success'):
+                    doc.add_paragraph(f"Error: {result.get('error', 'Unknown error')}")
+                    continue
+                    
+                if isinstance(result['data'], dict):
+                    # Add structured data
+                    for key, value in result['data'].items():
+                        if isinstance(value, (str, int, float, bool)):
+                            doc.add_paragraph(f"{key}: {value}")
+                        elif isinstance(value, list):
+                            doc.add_paragraph(f"{key}:")
+                            for item in value[:10]:  # Limit to first 10 items
+                                doc.add_paragraph(f"  • {str(item)}", style='List Bullet')
+            
+            # Save to bytes
+            doc_io = io.BytesIO()
+            doc.save(doc_io)
+            doc_io.seek(0)
+            
+            st.download_button(
+                label="⬇️ Word",
+                data=doc_io.getvalue(),
+                file_name=f"crawl4ai_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            )
+        
+        with col4:
+            # Markdown Download
+            markdown_content = f"""# Crawl4AI Scraping Results\n\n"""
+            markdown_content += f"**Generated at:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  \n"
+            markdown_content += f"**Total URLs:** {len(download_data['results'])}  \n"
+            markdown_content += f"**Successful:** {sum(1 for r in download_data['results'] if r.get('success', False))}  \n\n"
+            
+            markdown_content += "## Results\n\n"
+            for i, result in enumerate(download_data['results'], 1):
+                markdown_content += f"### Result {i}: {result['url']}\n\n"
+                
+                if not result.get('success'):
+                    markdown_content += f"**Error:** {result.get('error', 'Unknown error')}\n\n"
+                    continue
+                    
+                if isinstance(result['data'], dict):
+                    for key, value in result['data'].items():
+                        if isinstance(value, (str, int, float, bool)):
+                            markdown_content += f"**{key}:** {value}  \n"
+                        elif isinstance(value, list):
+                            markdown_content += f"**{key}:**  \n"
+                            for item in value[:10]:  # Limit to first 10 items
+                                markdown_content += f"- {str(item)}  \n"
+                        markdown_content += "\n"
+            
+            st.download_button(
+                label="⬇️ Markdown",
+                data=markdown_content,
+                file_name=f"crawl4ai_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md",
+                mime="text/markdown"
+            )
+            
+            # Convert to DataFrame for better display if data exists
+            if 'data' in results and results['data']:
+                try:
+                    df = pd.json_normalize(results['data'])
+                    
+                    # Display the first few rows
+                    if not df.empty:
+                        st.dataframe(df.head())
+                        
+                        # Add download button
+                        csv = df.to_csv(index=False).encode('utf-8')
+                        st.download_button(
+                            label="💾 Download as CSV",
+                            data=csv,
+                            file_name=f"crawl4ai_scraped_data_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                            mime="text/csv"
+                        )
+                    else:
+                        st.warning("No data available to display in table format.")
+                except Exception as e:
+                    st.warning(f"Could not convert results to table format: {str(e)}")
+            else:
+                st.info("No structured data available for tabular display. Please check the exported files for results.")
 
 def render_results_tab():
     """Render the results tab."""
@@ -3366,7 +4060,174 @@ def render_results_tab():
     else:
         st.info("No scraping results available. Run a scrape first!")
 
-# --- Main App ---
+def render_guide_tab():
+    """Render the user guide tab with instructions."""
+    st.header("📚 User Guide")
+    
+    with st.expander("🎯 Getting Started", expanded=True):
+        st.markdown("""
+        ### Welcome to Web Scraper Pro!
+        
+        This tool helps you extract and analyze data from any website using AI-powered features.
+        Follow these steps to get started:
+        
+        1. **Set up your API keys** in the sidebar (Gemini AI and optional Pinecone)
+        2. Choose the appropriate tab for your task
+        3. Enter the target URL and configure your settings
+        """)
+    
+    with st.expander("🔍 Analyze Tab"):
+        st.markdown("""
+        ### First-Page Analysis
+        
+        The Analyze tab helps you understand a webpage's structure and content:
+        
+        - **URL**: Enter the webpage URL you want to analyze
+        - **Use Selenium**: Enable for JavaScript-heavy sites
+        - **Analyze**: Click to start the analysis
+        
+        The analysis will provide:
+        - Page structure and content types
+        - Suggested selectors for data extraction
+        - SEO and accessibility insights
+        """)
+    
+    with st.expander("🛠️ Scrape Tab"):
+        st.markdown("""
+        ### Web Scraping
+        
+        Extract structured data from websites:
+        
+        1. Enter the target URL
+        2. Configure scraping options (pagination, selectors)
+        3. Click "Start Scraping"
+        
+        **Features**:
+        - Automatic pagination handling
+        - Custom CSS/XPATH selectors
+        - AI-powered selector suggestions
+        - Export results to CSV/Excel
+        """)
+    
+    if CRAWL4AI_AVAILABLE:
+        with st.expander("🤖 Crawl4AI Tab"):
+            st.markdown("""
+            ### AI-Powered Extraction
+            
+            Use Crawl4AI for advanced web scraping:
+            
+            - Handles modern JavaScript frameworks
+            - Extracts structured data from complex pages
+            - Supports both simple and complex extraction rules
+            
+            **Tip**: Use the visual selector to easily pick page elements
+            """)
+    
+    with st.expander("📊 Results"):
+        st.markdown("""
+        ### Viewing and Exporting Results
+        
+        - View scraped data in an interactive table
+        - Filter and sort results
+        - Export to multiple formats (CSV, Excel, JSON)
+        - Save configurations for future use
+        """)
+    
+    with st.expander("⚙️ Troubleshooting"):
+        st.markdown("""
+        ### Common Issues
+        
+        **Page not loading?**
+        - Try enabling Selenium for JavaScript rendering
+        - Check if the URL is correct and accessible
+        
+        **Getting rate-limited?**
+        - Add delays between requests
+        - Use proxies if available
+        - Check your API key quotas
+        
+        **Data not extracting correctly?**
+        - Try different selectors
+        - Use the AI selector suggestion feature
+        - Check the page structure in browser dev tools
+        """)
+    
+    with st.expander("🎯 CSS Selectors Guide", expanded=True):
+        st.markdown("""
+        ### Understanding CSS Selectors
+        
+        CSS selectors are patterns used to select and extract specific elements from a webpage. Here's a guide to the most commonly used selectors in our tool:
+        
+        #### Basic Selectors
+        - **Element**: `div`, `p`, `a` - Selects all elements of the specified type
+        - **Class**: `.classname` - Selects elements with the specified class
+        - **ID**: `#idname` - Selects the element with the specified ID
+        - **Attribute**: `[attribute]` or `[attribute=value]` - Selects elements with the specified attribute
+        
+        #### Common Patterns
+        - **Descendant**: `div p` - Selects all `<p>` elements inside `<div>` elements
+        - **Child**: `ul > li` - Selects all `<li>` elements that are direct children of `<ul>`
+        - **Multiple classes**: `.class1.class2` - Selects elements with both classes
+        - **Contains text**: `:contains("text")` - Selects elements containing the specified text
+        
+        #### Most Used Selectors in This Tool
+        - **Main Content**: `article`, `main`, `#content`, `.content`
+        - **Navigation**: `nav`, `.nav`, `#nav`, `ul.menu`
+        - **Images**: `img[src]`, `picture source[srcset]`
+        - **Links**: `a[href]`, `a[href*="http"]`
+        - **Buttons**: `button`, `.btn`, `input[type="submit"]`
+        - **Forms**: `form`, `input`, `select`, `textarea`
+        - **Metadata**: `time`, `[datetime]`, `.author`, `.date`
+        
+        #### Tips for Better Selectors
+        1. **Be specific but not too specific**: `#main .product` is better than just `.product` or `div div div.product`
+        2. **Use attributes**: `a[href^="https://"]` selects all links starting with https://
+        3. **Combine selectors**: `div.product:not(.sold-out)` selects products that aren't sold out
+        4. **Test in browser**: Use browser's developer tools (F12) to test your selectors
+        5. **Use AI suggestions**: The tool provides smart selector suggestions - use them as a starting point
+        
+        #### Example Selectors
+        ```css
+        /* Product title on an e-commerce site */
+        .product-title, h1.product-name
+        
+        /* Price element */
+        .price, .amount, [itemprop="price"]
+        
+        /* Product description */
+        .product-description, [itemprop="description"]
+        
+        /* Navigation links */
+        nav a, .main-menu > ul > li > a
+        
+        /* Social media links */
+        .social-links a, [class*="social-"] a
+        ```
+        
+        Remember that different websites may require different selector strategies. The more you work with selectors, the better you'll become at creating effective ones!
+        """)
+
+def render_ai_scraper_tab():
+    """Render the AI Scraper tab with the AI-powered web scraping interface."""
+    st.markdown("""
+    ## 🧠 AI-Powered Web Scraper
+    
+    This tool uses AI to automatically detect and extract data from web pages. 
+    Simply enter a URL and describe the data you want to extract.
+    """)
+    
+    try:
+        # Import the AI scraper UI components
+        from ai_scraper_ui import main as ai_scraper_main
+        
+        # Run the AI scraper UI
+        ai_scraper_main()
+        
+    except Exception as e:
+        st.error(f"Failed to load AI Scraper: {str(e)}")
+        st.exception(e)  # Show full exception for debugging
+
+
 def main():
     """Main application function."""
     # Initialize session state
@@ -3380,26 +4241,33 @@ def main():
     st.markdown("Extract data from any website with AI-powered analysis and custom selectors.")
     
     # Create tabs based on Crawl4AI availability
-    tab_titles = (["🔍 Analyze", "🛠️ Scrape", "🤖 Crawl4AI", "📊 Results"] 
+    tab_titles = (["📚 Guide", "🔍 Analyze", "🛠️ Scrape", "🤖 AI Scraper", "🤖 Crawl4AI", "📊 Results"] 
                  if CRAWL4AI_AVAILABLE 
-                 else ["🔍 Analyze", "🛠️ Scrape", "📊 Results"])
+                 else ["📚 Guide", "🔍 Analyze", "🛠️ Scrape", "🤖 AI Scraper", "📊 Results"])
     tabs = st.tabs(tab_titles)
     
-    with tabs[0]:  # Analyze tab
+    with tabs[0]:  # Guide tab
+        render_guide_tab()
+    
+    with tabs[1]:  # Analyze tab
         render_analysis_tab()
     
-    with tabs[1]:  # Scrape tab
+    with tabs[2]:  # Scrape tab
         render_scraper_tab()
+    
+    # AI Scraper tab is always at index 3, adjust other tabs accordingly
+    with tabs[3]:  # AI Scraper tab
+        render_ai_scraper_tab()
     
     # Add Crawl4AI tab if available
     if CRAWL4AI_AVAILABLE:
-        with tabs[2]:  # Crawl4AI tab
+        with tabs[4]:  # Crawl4AI tab
             render_crawl4ai_tab()
         
-        with tabs[3]:  # Results tab
+        with tabs[5]:  # Results tab
             render_results_tab()
     else:
-        with tabs[2]:  # Results tab
+        with tabs[4]:  # Results tab
             render_results_tab()
     
     # Add footer
