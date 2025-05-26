@@ -2,6 +2,13 @@
   "version": 2,
   "builds": [
     {
+      "src": "vercel-build.sh",
+      "use": "@vercel/static-build",
+      "config": {
+        "distDir": "public"
+      }
+    },
+    {
       "src": "streamlit_app.py",
       "use": "@vercel/python"
     }
@@ -14,6 +21,9 @@
   ],
   "env": {
     "PYTHON_VERSION": "3.9",
-    "STREAMLIT_SERVER_HEADLESS": "true"
-  }
+    "STREAMLIT_SERVER_HEADLESS": "true",
+    "PYTHONUNBUFFERED": "1"
+  },
+  "buildCommand": "./vercel-build.sh",
+  "outputDirectory": "public"
 }
